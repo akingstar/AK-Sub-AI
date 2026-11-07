@@ -150,6 +150,31 @@ import { pipeline, env } from
 const $=id=>document.getElementById(id);
 let file=null, videoURL=null, rows=[], asr=null, translator=null;
 let busy=false;
+
+let ffmpegEngine=null, ffmpegFetchFile=null, ffmpegLoadPromise=null;
+
+async function getFFmpeg(){
+ if(ffmpegEngine)return ffmpegEngine;
+ if(ffmpegLoadPromise)return ffmpegLoadPromise;
+
+ ffmpegLoadPromise=(async()=>{
+  const {FFmpeg}=await import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js');
+  const {fetchFile,toBlobURL}=await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js');
+  const engine=new FFmpeg();
+  engine.on('log',({message})=>{if(message)status(message)});
+  status('Loading browser media engine...');
+  await engine.load({
+   coreURL:await toBlobURL('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js','text/javascript'),
+   wasmURL:await toBlobURL('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm','application/wasm')
+  });
+  ffmpegFetchFile=fetchFile;
+  ffmpegEngine=engine;
+  return engine;
+ })();
+
+ try{return await ffmpegLoadPromise}
+ finally{ffmpegLoadPromise=null}
+}
 const sourceCodes={
  english:'eng_Latn',spanish:'spa_Latn',french:'fra_Latn',
  hindi:'hin_Deva',arabic:'arb_Arab',german:'deu_Latn',
@@ -234,22 +259,42 @@ function style(){
 }
 ['size','color','background','style'].forEach(id=>$(id).oninput=style);
 
+
 async function getAudio(){
+ let audioFile=file;
+
+ if(file.type.startsWith('video/')){
+  status('Extracting audio track from video...');
+  const ff=await getFFmpeg();
+  const ext=(file.name.split('.').pop()||'mp4').replace(/[^a-z0-9]/gi,'')||'mp4';
+  await ff.writeFile('ak-source.'+ext,await ffmpegFetchFile(file));
+  await ff.exec([
+   '-i','ak-source.'+ext,
+   '-vn','-ac','1','-ar','16000',
+   '-c:a','pcm_s16le','ak-audio.wav'
+  ]);
+  const wav=await ff.readFile('ak-audio.wav');
+  audioFile=new Blob([wav],{type:'audio/wav'});
+ }
+
+ status('Converting audio to 16 kHz mono...');
  const ctx=new AudioContext();
- const data=await file.arrayBuffer();
- const decoded=await ctx.decodeAudioData(data);
- const target=16000;
- const length=Math.ceil(decoded.duration*target);
- const offline=new OfflineAudioContext(1,length,target);
- const src=offline.createBufferSource();
- src.buffer=decoded;
- src.connect(offline.destination);
- src.start();
- const rendered=await offline.startRendering();
- const audio=rendered.getChannelData(0);
- await ctx.close();
- return audio;
+ try{
+  const decoded=await ctx.decodeAudioData(await audioFile.arrayBuffer());
+  const target=16000;
+  const length=Math.max(1,Math.ceil(decoded.duration*target));
+  const offline=new OfflineAudioContext(1,length,target);
+  const src=offline.createBufferSource();
+  src.buffer=decoded;
+  src.connect(offline.destination);
+  src.start(0);
+  const rendered=await offline.startRendering();
+  return rendered.getChannelData(0).slice();
+ }finally{
+  await ctx.close();
+ }
 }
+
 
 $('generate').onclick=async()=>{
  if(!file||busy)return alert('Please upload a video or audio file first.');
@@ -265,12 +310,14 @@ $('generate').onclick=async()=>{
   const audio=await getAudio();
   status('AI is generating subtitles. Please wait...');
   const lang=$('language').value;
-  const result=await asr(audio,{
+  const whisperOptions={
+    task:'transcribe',
     chunk_length_s:30,
     stride_length_s:5,
-    return_timestamps:true,
-    ...(lang!=='auto'?{language:lang}:{})
-  });
+    return_timestamps:true
+  };
+  if(lang!=='auto')whisperOptions.language=lang;
+  const result=await asr(audio,whisperOptions);
   const chunks=result.chunks||[];
   rows=chunks.map(c=>({
    start:c.timestamp?.[0]??0,
@@ -354,20 +401,12 @@ $('export').onclick=async()=>{
   const srt=rows.map((r,i)=>
    `${i+1}\n${srtTime(r.start)} --> ${srtTime(r.end)}\n${r.text}\n`
   ).join('\n');
-  const {FFmpeg}=await import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js');
-  const {fetchFile,toBlobURL}=await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js');
-  const ff=new FFmpeg();
-  ff.on('log',({message})=>status(message));
-  status('Loading video export engine...');
-  await ff.load({
-   coreURL:await toBlobURL('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js','text/javascript'),
-   wasmURL:await toBlobURL('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm','application/wasm')
-  });
+  const ff=await getFFmpeg();
   const ext=(file.name.split('.').pop()||'mp4').replace(/[^a-z0-9]/gi,'');
-  await ff.writeFile('input.'+ext,await fetchFile(file));
+  await ff.writeFile('input.'+ext,await ffmpegFetchFile(file));
   await ff.writeFile('captions.srt',new TextEncoder().encode(srt));
   status('Burning Hindi subtitles into video. This may take time...');
-  await ff.exec(['-i','input.'+ext,'-vf',"subtitles=captions.srt",' -c:v','libx264','-preset','ultrafast','-c:a','aac','-b:a','128k','output.mp4'].filter(x=>x!==' -c:v'));
+  await ff.exec(['-i','input.'+ext,'-vf',"subtitles=captions.srt",'-c:v','libx264','-preset','ultrafast','-c:a','aac','-b:a','128k','output.mp4']);
   const data=await ff.readFile('output.mp4');
   download(new Blob([data.buffer],{type:'video/mp4'}),'AK-Sub-AI.mp4');
   status('MP4 export complete!');

@@ -206,6 +206,15 @@ const detectedLanguages={
 };
 
 function status(t){$('status').textContent=t}
+function errorDetails(e){
+ try{
+  if(e instanceof Error)return e.stack||e.message||String(e);
+  if(typeof e==='string')return e;
+  return JSON.stringify(e) || String(e);
+ }catch(_){
+  return String(e);
+ }
+}
 function progress(n){$('bar').style.width=n+'%'}
 
 $('file').onchange=e=>{
@@ -507,7 +516,7 @@ $('generate').onclick=async()=>{
   }
 
  }catch(e){
-  status('Error: '+e.message);
+  status('Error: '+errorDetails(e));
   console.error(e);
  }finally{
   busy=false;
@@ -527,7 +536,7 @@ $('translate').onclick=async()=>{
  try{
   await translateRowsToHindi();
  }catch(e){
-  status('Translation error: '+e.message);
+  status('Translation error: '+errorDetails(e));
   console.error(e);
  }finally{
   busy=false;

@@ -160,6 +160,7 @@ import { pipeline, env } from
 const $=id=>document.getElementById(id);
 let file=null, videoURL=null, rows=[], asr=null, translator=null, languageDetector=null;
 let busy=false;
+let translationStage='general processing';
 
 let ffmpegEngine=null, ffmpegFetchFile=null, ffmpegLoadPromise=null;
 
@@ -210,6 +211,7 @@ function errorDetails(e){
  try{
   if(e instanceof Error)return e.stack||e.message||String(e);
   if(typeof e==='string')return e;
+  if(typeof e==='number')return 'Numeric error '+e+' (hex 0x'+(e>>>0).toString(16)+')';
   return JSON.stringify(e) || String(e);
  }catch(_){
   return String(e);
@@ -370,8 +372,10 @@ async function detectSourceLanguage(){
 }
 
 async function translateRowsToHindi(){
+ translationStage='checking subtitle input';
  if(!rows.length)throw new Error('Generate subtitles first.');
 
+ translationStage='detecting source language';
  const selected=$('language').value;
  const source=selected==='auto'?await detectSourceLanguage():selected;
 
@@ -380,6 +384,7 @@ async function translateRowsToHindi(){
   return;
  }
 
+ translationStage='validating source language';
  const srcCode=sourceCodes[source];
  if(!srcCode)throw new Error('Source language could not be identified. Select the original language manually.');
 
@@ -388,6 +393,7 @@ async function translateRowsToHindi(){
   sourceText:r.sourceText??r.text
  }));
 
+ translationStage='loading NLLB model';
  status('Loading Hindi translation AI model. First download may take time...');
  if(!translator){
   const originalRemoteHost=env.remoteHost;
@@ -423,6 +429,7 @@ async function translateRowsToHindi(){
 
   status('Hindi translation: '+end+' / '+originals.length);
 
+  translationStage='running NLLB inference, batch starting at subtitle '+(start+1);
   const results=await translator(inputs,{
    src_lang:srcCode,
    tgt_lang:'hin_Deva'
@@ -444,6 +451,7 @@ async function translateRowsToHindi(){
  }
 
  // Commit only after every subtitle has translated successfully.
+ translationStage='rendering translated subtitles';
  rows=originals.map((r,i)=>({
   ...r,
   text:translated[i],
@@ -451,6 +459,7 @@ async function translateRowsToHindi(){
  }));
 
  render();
+ translationStage='complete';
  status('Hindi translation complete! '+rows.length+' subtitle segments translated.');
 }
 
@@ -516,7 +525,7 @@ $('generate').onclick=async()=>{
   }
 
  }catch(e){
-  status('Error: '+errorDetails(e));
+  status('Error ['+translationStage+']: '+errorDetails(e));
   console.error(e);
  }finally{
   busy=false;
@@ -536,7 +545,7 @@ $('translate').onclick=async()=>{
  try{
   await translateRowsToHindi();
  }catch(e){
-  status('Translation error: '+errorDetails(e));
+  status('Translation error ['+translationStage+']: '+errorDetails(e));
   console.error(e);
  }finally{
   busy=false;

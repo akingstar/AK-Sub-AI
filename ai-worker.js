@@ -179,20 +179,6 @@ async function translate(id,inputRows,selected){
  const sources=Object.keys(groups);
 
  if(sources.length){
-  if(!translator){
-   progress(id,'Loading Hindi translation model...');
-   const previous=env.remoteHost;
-   env.remoteHost=PROXY;
-   try{
-    translator=await pipeline(
-     'translation',
-     'Xenova/nllb-200-distilled-600M',
-     {dtype:'q8'}
-    );
-   }finally{
-    env.remoteHost=previous;
-   }
-  }
 
   for(const source of sources){
    const indexes=groups[source];

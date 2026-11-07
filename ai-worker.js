@@ -17,7 +17,7 @@ const labels={
  pt:'portuguese',ru:'russian',sw:'swahili',th:'thai',
  tr:'turkish',ur:'urdu',vi:'vietnamese',zh:'chinese'
 };
-let asr=null,translator=null,detector=null;
+let asr=null,translator=null,translatorModel=null,detector=null;
 
 function progress(id,message){
  self.postMessage({id,progress:message});
@@ -197,16 +197,52 @@ async function translate(id,inputRows,selected){
   for(const source of sources){
    const indexes=groups[source];
 
+   let modelName;
+   if(source==='english'){
+    modelName='Xenova/opus-mt-en-hi';
+   }else{
+    modelName='Xenova/nllb-200-distilled-600M';
+   }
+
+   if(!translator||translatorModel!==modelName){
+    progress(id,source==='english'
+     ?'Loading lightweight English-Hindi model...'
+     :'Loading multilingual Hindi translation model...');
+
+    if(source==='english'){
+     translator=await pipeline(
+      'translation',
+      modelName,
+      {dtype:'q8'}
+     );
+    }else{
+     const previous=env.remoteHost;
+     env.remoteHost=PROXY;
+     try{
+      translator=await pipeline(
+       'translation',
+       modelName,
+       {dtype:'q8'}
+      );
+     }finally{
+      env.remoteHost=previous;
+     }
+    }
+    translatorModel=modelName;
+   }
+
    for(let start=0;start<indexes.length;start+=4){
     const batchIndexes=indexes.slice(start,start+4);
     const inputs=batchIndexes.map(i=>originals[i].sourceText);
 
     progress(id,`Translating ${source}: ${Math.min(start+4,indexes.length)}/${indexes.length}`);
 
-    const results=await translator(inputs,{
-     src_lang:codes[source],
-     tgt_lang:'hin_Deva'
-    });
+    const results=source==='english'
+     ?await translator(inputs)
+     :await translator(inputs,{
+       src_lang:codes[source],
+       tgt_lang:'hin_Deva'
+      });
 
     if(!Array.isArray(results)||results.length!==inputs.length)
      throw Error('Translation response invalid for '+source);

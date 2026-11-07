@@ -381,11 +381,17 @@ async function translateRowsToHindi(){
 
  status('Loading Hindi translation AI model. First download may take time...');
  if(!translator){
-  translator=await pipeline(
-   'translation',
-   'Xenova/nllb-200-distilled-600M',
-   {dtype:'q8'}
-  );
+  const originalRemoteHost=env.remoteHost;
+  env.remoteHost='https://ak-sub-ai-nllb-proxy.akingstar205.workers.dev';
+  try {
+   translator=await pipeline(
+    'translation',
+    'Xenova/nllb-200-distilled-600M',
+    {dtype:'q8'}
+   );
+  } finally {
+   env.remoteHost=originalRemoteHost;
+  }
  }
 
  const translated=new Array(originals.length).fill('');

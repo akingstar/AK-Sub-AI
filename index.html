@@ -313,7 +313,7 @@ async function detectSourceLanguage(){
  if(/[\u4e00-\u9fff]/.test(sample))return 'chinese';
  if(/[\u0400-\u04ff]/.test(sample))return 'russian';
 
- throw new Error('Latin-script language detected. Please select the original audio language manually before Hindi translation.');
+ return 'english';
 }
 
 async function translateRowsToHindi(){
@@ -344,31 +344,44 @@ async function translateRowsToHindi(){
   );
  }
 
- const translated=[];
+ const translated=new Array(originals.length).fill('');
+ const batchSize=4;
 
- for(let i=0;i<originals.length;i++){
-  const input=String(originals[i].sourceText||'').trim();
+ for(let start=0;start<originals.length;start+=batchSize){
+  const inputs=[];
+  const indexes=[];
+  const end=Math.min(start+batchSize,originals.length);
 
-  if(!input){
-   translated.push('');
-   continue;
+  for(let i=start;i<end;i++){
+   const input=String(originals[i].sourceText||'').trim();
+   if(input){
+    inputs.push(input);
+    indexes.push(i);
+   }
   }
 
-  status('Translating into Hindi: '+(i+1)+' / '+originals.length);
+  if(!inputs.length)continue;
 
-  const result=await translator(input,{
+  status('Hindi translation: '+end+' / '+originals.length);
+
+  const results=await translator(inputs,{
    src_lang:srcCode,
    tgt_lang:'hin_Deva'
   });
 
-  const output=String(result?.[0]?.translation_text||'').trim();
-
-  if(!output){
-   throw new Error('Translation returned empty text at subtitle '+(i+1)+'. Original subtitles have been preserved.');
+  if(!Array.isArray(results)||results.length!==inputs.length){
+   throw new Error('Batch translation failed. Original subtitles preserved.');
   }
 
-  translated.push(output);
-  progress(Math.round(((i+1)/originals.length)*100));
+  for(let j=0;j<results.length;j++){
+   const output=String(results[j]?.translation_text||'').trim();
+   if(!output){
+    throw new Error('Empty translation at subtitle '+(indexes[j]+1)+'.');
+   }
+   translated[indexes[j]]=output;
+  }
+
+  progress(Math.round(end/originals.length*100));
  }
 
  // Commit only after every subtitle has translated successfully.

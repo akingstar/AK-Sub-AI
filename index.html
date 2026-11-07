@@ -160,6 +160,7 @@ import { pipeline, env } from
 const $=id=>document.getElementById(id);
 let file=null, videoURL=null, rows=[], asr=null, translator=null, languageDetector=null;
 let busy=false;
+let translatorModelId=null;
 let translationStage='general processing';
 
 let ffmpegEngine=null, ffmpegFetchFile=null, ffmpegLoadPromise=null;
@@ -393,24 +394,33 @@ async function translateRowsToHindi(){
   sourceText:r.sourceText??r.text
  }));
 
- translationStage='loading NLLB model';
+ translationStage='loading translation model';
  status('Loading Hindi translation AI model. First download may take time...');
- if(!translator){
+ const useLightweightEnglishModel = source === 'english';
+ const translationModel = useLightweightEnglishModel
+  ? 'Xenova/opus-mt-en-hi'
+  : 'Xenova/nllb-200-distilled-600M';
+
+ if(!translator || translatorModelId !== translationModel){
+  translator=null;
   const originalRemoteHost=env.remoteHost;
-  env.remoteHost='https://ak-sub-ai-nllb-proxy.akingstar205.workers.dev';
+  if(!useLightweightEnglishModel){
+   env.remoteHost='https://ak-sub-ai-nllb-proxy.akingstar205.workers.dev';
+  }
   try {
    translator=await pipeline(
     'translation',
-    'Xenova/nllb-200-distilled-600M',
+    translationModel,
     {dtype:'q8'}
    );
+   translatorModelId=translationModel;
   } finally {
    env.remoteHost=originalRemoteHost;
   }
  }
 
  const translated=new Array(originals.length).fill('');
- const batchSize=4;
+ const batchSize=1;
 
  for(let start=0;start<originals.length;start+=batchSize){
   const inputs=[];
@@ -430,10 +440,12 @@ async function translateRowsToHindi(){
   status('Hindi translation: '+end+' / '+originals.length);
 
   translationStage='running NLLB inference, batch starting at subtitle '+(start+1);
-  const results=await translator(inputs,{
-   src_lang:srcCode,
-   tgt_lang:'hin_Deva'
-  });
+  const results=useLightweightEnglishModel
+   ? await translator(inputs)
+   : await translator(inputs,{
+      src_lang:srcCode,
+      tgt_lang:'hin_Deva'
+     });
 
   if(!Array.isArray(results)||results.length!==inputs.length){
    throw new Error('Batch translation failed. Original subtitles preserved.');

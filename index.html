@@ -89,6 +89,16 @@ footer{text-align:center;padding:30px;color:#8994aa;font-size:12px}
      <option value="chinese">Chinese</option>
      <option value="portuguese">Portuguese</option>
      <option value="russian">Russian</option>
+     <option value="italian">Italian</option>
+     <option value="dutch">Dutch</option>
+     <option value="polish">Polish</option>
+     <option value="swahili">Swahili</option>
+     <option value="thai">Thai</option>
+     <option value="turkish">Turkish</option>
+     <option value="urdu">Urdu</option>
+     <option value="vietnamese">Vietnamese</option>
+     <option value="bulgarian">Bulgarian</option>
+     <option value="greek">Greek</option>
     </select>
    </div>
    <div class="field">
@@ -148,7 +158,7 @@ import { pipeline, env } from
  'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2';
 
 const $=id=>document.getElementById(id);
-let file=null, videoURL=null, rows=[], asr=null, translator=null;
+let file=null, videoURL=null, rows=[], asr=null, translator=null, languageDetector=null;
 let busy=false;
 
 let ffmpegEngine=null, ffmpegFetchFile=null, ffmpegLoadPromise=null;
@@ -180,7 +190,19 @@ const sourceCodes={
  english:'eng_Latn',spanish:'spa_Latn',french:'fra_Latn',
  hindi:'hin_Deva',arabic:'arb_Arab',german:'deu_Latn',
  japanese:'jpn_Jpan',chinese:'zho_Hans',
- portuguese:'por_Latn',russian:'rus_Cyrl'
+ portuguese:'por_Latn',russian:'rus_Cyrl',
+ italian:'ita_Latn',dutch:'nld_Latn',polish:'pol_Latn',
+ swahili:'swh_Latn',thai:'tha_Thai',turkish:'tur_Latn',
+ urdu:'urd_Arab',vietnamese:'vie_Latn',
+ bulgarian:'bul_Cyrl',greek:'ell_Grek'
+};
+
+const detectedLanguages={
+ ar:'arabic',bg:'bulgarian',de:'german',el:'greek',
+ en:'english',es:'spanish',fr:'french',hi:'hindi',
+ it:'italian',ja:'japanese',nl:'dutch',pl:'polish',
+ pt:'portuguese',ru:'russian',sw:'swahili',th:'thai',
+ tr:'turkish',ur:'urdu',vi:'vietnamese',zh:'chinese'
 };
 
 function status(t){$('status').textContent=t}
@@ -298,22 +320,44 @@ async function getAudio(){
 
 
 
-// Detect languages that can be identified reliably from their writing system.
+// Detect the transcript language with a multilingual AI classifier.
 async function detectSourceLanguage(){
  const sample=rows.slice(0,30)
   .map(r=>r.sourceText??r.text)
   .join(' ')
-  .trim();
+  .trim()
+  .slice(0,1500);
 
  if(!sample)throw new Error('No transcript available for language detection.');
 
- if(/[\u0900-\u097f]/.test(sample))return 'hindi';
- if(/[\u0600-\u06ff]/.test(sample))return 'arabic';
- if(/[\u3040-\u30ff]/.test(sample))return 'japanese';
- if(/[\u4e00-\u9fff]/.test(sample))return 'chinese';
- if(/[\u0400-\u04ff]/.test(sample))return 'russian';
+ if(!languageDetector){
+  status('Loading AI language detector. First download may take time...');
+  languageDetector=await pipeline(
+   'text-classification',
+   'onnx-community/xlm-roberta-base-language-detection-ONNX',
+   {dtype:'q8'}
+  );
+ }
 
- return 'english';
+ status('AI is identifying the spoken language...');
+ const result=await languageDetector(sample,{top_k:1,truncation:true});
+ const prediction=Array.isArray(result?.[0])?result[0][0]:result?.[0];
+
+ if(!prediction?.label||typeof prediction.score!=='number'){
+  throw new Error('Language detection returned an invalid result. Select the source language manually.');
+ }
+
+ const label=String(prediction.label).toLowerCase()
+  .replace(/^__label__/,'')
+  .replace(/^label_/,'');
+ const language=detectedLanguages[label];
+
+ if(!language||prediction.score<0.45){
+  throw new Error('Language could not be identified confidently. Select the source language manually.');
+ }
+
+ status('Detected language: '+language+' ('+Math.round(prediction.score*100)+'% confidence).');
+ return language;
 }
 
 async function translateRowsToHindi(){

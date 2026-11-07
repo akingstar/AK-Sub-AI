@@ -296,78 +296,180 @@ async function getAudio(){
 }
 
 
+
+// Detect languages that can be identified reliably from their writing system.
+async function detectSourceLanguage(){
+ const sample=rows.slice(0,30)
+  .map(r=>r.sourceText??r.text)
+  .join(' ')
+  .trim();
+
+ if(!sample)throw new Error('No transcript available for language detection.');
+
+ if(/[\u0900-\u097f]/.test(sample))return 'hindi';
+ if(/[\u0600-\u06ff]/.test(sample))return 'arabic';
+ if(/[\u3040-\u30ff]/.test(sample))return 'japanese';
+ if(/[\u4e00-\u9fff]/.test(sample))return 'chinese';
+ if(/[\u0400-\u04ff]/.test(sample))return 'russian';
+
+ throw new Error('Latin-script language detected. Please select the original audio language manually before Hindi translation.');
+}
+
+async function translateRowsToHindi(){
+ if(!rows.length)throw new Error('Generate subtitles first.');
+
+ const selected=$('language').value;
+ const source=selected==='auto'?await detectSourceLanguage():selected;
+
+ if(source==='hindi'){
+  status('Hindi detected. Translation is not needed.');
+  return;
+ }
+
+ const srcCode=sourceCodes[source];
+ if(!srcCode)throw new Error('Source language could not be identified. Select the original language manually.');
+
+ const originals=rows.map(r=>({
+  ...r,
+  sourceText:r.sourceText??r.text
+ }));
+
+ status('Loading Hindi translation AI model. First download may take time...');
+ if(!translator){
+  translator=await pipeline(
+   'translation',
+   'Xenova/nllb-200-distilled-600M',
+   {dtype:'q8'}
+  );
+ }
+
+ const translated=[];
+
+ for(let i=0;i<originals.length;i++){
+  const input=String(originals[i].sourceText||'').trim();
+
+  if(!input){
+   translated.push('');
+   continue;
+  }
+
+  status('Translating into Hindi: '+(i+1)+' / '+originals.length);
+
+  const result=await translator(input,{
+   src_lang:srcCode,
+   tgt_lang:'hin_Deva'
+  });
+
+  const output=String(result?.[0]?.translation_text||'').trim();
+
+  if(!output){
+   throw new Error('Translation returned empty text at subtitle '+(i+1)+'. Original subtitles have been preserved.');
+  }
+
+  translated.push(output);
+  progress(Math.round(((i+1)/originals.length)*100));
+ }
+
+ // Commit only after every subtitle has translated successfully.
+ rows=originals.map((r,i)=>({
+  ...r,
+  text:translated[i],
+  sourceText:r.sourceText
+ }));
+
+ render();
+ status('Hindi translation complete! '+rows.length+' subtitle segments translated.');
+}
+
 $('generate').onclick=async()=>{
  if(!file||busy)return alert('Please upload a video or audio file first.');
+
  busy=true;
  $('generate').disabled=true;
+ $('translate').disabled=true;
+
  try{
   status('Loading Whisper AI model. First download can be large...');
+
   if(!asr){
-   asr=await pipeline('automatic-speech-recognition',
-     'onnx-community/whisper-tiny',{dtype:'q8'});
+   asr=await pipeline(
+    'automatic-speech-recognition',
+    'onnx-community/whisper-tiny',
+    {dtype:'q8'}
+   );
   }
+
   status('Reading audio...');
   const audio=await getAudio();
+
   status('AI is generating subtitles. Please wait...');
   const lang=$('language').value;
+
   const whisperOptions={
-    task:'transcribe',
-    chunk_length_s:30,
-    stride_length_s:5,
-    return_timestamps:true
+   task:'transcribe',
+   chunk_length_s:30,
+   stride_length_s:5,
+   return_timestamps:true
   };
+
   if(lang!=='auto')whisperOptions.language=lang;
+
   const result=await asr(audio,whisperOptions);
   const chunks=result.chunks||[];
+
   rows=chunks.map(c=>({
    start:c.timestamp?.[0]??0,
    end:c.timestamp?.[1]??(c.timestamp?.[0]??0)+3,
    text:(c.text||'').trim()
   })).filter(x=>x.text);
+
   if(!rows.length&&result.text){
-   rows=[{start:0,end:Math.max(3,$('video').duration||3),text:result.text.trim()}];
+   rows=[{
+    start:0,
+    end:Math.max(3,$('video').duration||3),
+    text:result.text.trim()
+   }];
   }
+
+  if(!rows.length)throw new Error('No speech detected. Please try a clearer audio file.');
+
   render();
-  progress(100);
-  status('Transcription complete! '+rows.length+' subtitle segments generated.');
-  if($('output').value==='hindi'&&lang!=='hindi'){
-   status('Transcription complete. Select Translate to Hindi to translate the captions.');
+
+  if($('output').value==='hindi'){
+   await translateRowsToHindi();
+  }else{
+   progress(100);
+   status('Transcription complete! '+rows.length+' subtitle segments generated.');
   }
+
  }catch(e){
   status('Error: '+e.message);
   console.error(e);
  }finally{
   busy=false;
   $('generate').disabled=false;
+  $('translate').disabled=false;
  }
 };
 
 $('translate').onclick=async()=>{
  if(!rows.length)return alert('Generate subtitles first.');
- const src=$('language').value;
- if(src==='auto')return alert('For translation, select the original audio language first.');
- if(src==='hindi')return alert('Your subtitles are already in Hindi.');
  if(busy)return;
+
  busy=true;
  $('translate').disabled=true;
+ $('generate').disabled=true;
+
  try{
-  status('Loading multilingual translation AI model...');
-  if(!translator){
-   translator=await pipeline('translation',
-    'Xenova/nllb-200-distilled-600M',{dtype:'q8'});
-  }
-  for(let i=0;i<rows.length;i++){
-   const result=await translator(rows[i].text,{
-    src_lang:sourceCodes[src],tgt_lang:'hin_Deva'
-   });
-   rows[i].text=result[0].translation_text;
-   progress(Math.round((i+1)/rows.length*100));
-   if(i%5===0)render();
-  }
-  render();
-  status('Hindi translation complete!');
- }catch(e){status('Translation error: '+e.message)}
- finally{busy=false;$('translate').disabled=false}
+  await translateRowsToHindi();
+ }catch(e){
+  status('Translation error: '+e.message);
+  console.error(e);
+ }finally{
+  busy=false;
+  $('translate').disabled=false;
+  $('generate').disabled=false;
+ }
 };
 
 $('add').onclick=()=>{

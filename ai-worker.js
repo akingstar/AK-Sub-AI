@@ -641,8 +641,10 @@ async function localTranscribe(id, samples, lang) {
   const useGpu = typeof navigator !== 'undefined' && !!navigator.gpu;
   localAsr = await pipeline(
    'automatic-speech-recognition',
-   'onnx-community/whisper-tiny',
-   useGpu ? { device: 'webgpu', dtype: 'fp32' } : { dtype: 'q8' }
+   useGpu ? 'onnx-community/whisper-large-v3-turbo' : 'onnx-community/whisper-small',
+   useGpu
+    ? { device: 'webgpu', dtype: { encoder_model: 'fp16', decoder_model_merged: 'q4' } }
+    : { dtype: 'q8' }
   );
  }
  progress(id, 'Local Whisper: transcribe ho raha hai...');

@@ -40,9 +40,7 @@ jobs:
         run: |
           MODEL_ROOT="indicxlit-source/app/ai4bharat/transliteration/transformer/models"
           MODEL_DIR="$MODEL_ROOT/v1.0"
-
           mkdir -p "$MODEL_DIR"
-
           test -f "$MODEL_ROOT/lang_list.txt"
 
           curl -fL --retry 3 \
@@ -53,21 +51,51 @@ jobs:
 
           test -f "$MODEL_DIR/transformer/indicxlit.pt"
           test -f "$MODEL_DIR/corpus-bin/dict.en.txt"
-          echo "IndicXlit model files verified."
+          echo "Official IndicXlit model verified."
 
-      - name: Test Roman Hindi to Devanagari
+      - name: Restore Hindi rescoring dictionary cache
+        uses: actions/cache@v4
+        with:
+          path: indicxlit-source/app/ai4bharat/transliteration/transformer/models/v1.0/word_prob_dicts
+          key: indicxlit-hi-word-dictionaries-v1
+
+      - name: Test Hindi transliteration with rescoring
         env:
           PYTHONPATH: indicxlit-source/app
         run: |
           python - <<'PY'
+          import re
           from ai4bharat.transliteration import XlitEngine
 
-          print("Loading official IndicXlit Hindi model...")
+          print("Loading IndicXlit with Hindi rescoring enabled...")
           engine = XlitEngine(
               lang2use="hi",
-              beam_width=4,
-              rescore=False
+              beam_width=10,
+              rescore=True
           )
+
+          word_cache = {}
+
+          def get_candidates(word):
+              key = word.lower()
+              if key not in word_cache:
+                  result = engine.translit_word(
+                      key,
+                      lang_code="hi",
+                      topk=10
+                  )
+                  if not isinstance(result, list) or not result:
+                      raise RuntimeError(
+                          f"No transliteration candidates for: {key}"
+                      )
+                  word_cache[key] = result
+              return word_cache[key]
+
+          def transliterate_sentence(text):
+              def replace_word(match):
+                  candidates = get_candidates(match.group(0))
+                  return candidates[0]
+              return re.sub(r"[A-Za-z]+", replace_word, text)
 
           samples = [
               "mera naam akshay hai",
@@ -82,13 +110,41 @@ jobs:
               "yeh mera phone hai",
               "main ghar par hoon",
               "aapka naam kya hai",
-              "dhanyavaad bhai"
+              "dhanyavaad bhai",
+              "mujhe pani chahiye",
+              "tum kahan ja rahe ho",
+              "main theek hoon",
+              "mujhe samajh nahi aaya",
+              "bahut accha laga",
+              "kal subah milte hain",
+              "ghar par sab theek hai",
+              "mujhe aapse madad chahiye",
+              "please mujhe call karna",
+              "mera phone kahan hai",
+              "aap yahan kab aaye",
+              "main abhi vyast hoon"
           ]
 
-          print("\n===== TRANSLITERATION RESULTS =====")
+          print("\n===== RESCORED HINDI RESULTS =====")
           for text in samples:
-              result = engine.translit_sentence(text, lang_code="hi")
+              output = transliterate_sentence(text)
               print(f"INPUT : {text}")
-              print(f"OUTPUT: {result}")
-              print("-" * 40)
+              print(f"OUTPUT: {output}")
+              print("-" * 45)
+
+          debug_words = [
+              "milte", "accha", "kripya", "bataiye",
+              "yeh", "main", "kal", "bahut", "hoon"
+          ]
+
+          print("\n===== TOP CANDIDATES FOR TROUBLE WORDS =====")
+          for word in debug_words:
+              print(f"{word}: {get_candidates(word)[:10]}")
+
+          print("\n===== TEST SUMMARY =====")
+          print(f"Sentences tested: {len(samples)}")
+          print(f"Unique words processed: {len(word_cache)}")
+          print("Rescoring enabled: True")
+          print("Beam width: 10")
+          print("Candidates per word: 10")
           PY

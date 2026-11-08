@@ -272,8 +272,9 @@ function time(s){
  '.'+String(Math.floor(s*1000)%1000).padStart(3,'0');
 }
 function parse(s){
- const p=s.split(':').map(Number);
- if(p.length!==3||p.some(Number.isNaN))return 0;
+ const value=String(s).trim();
+ if(!/^\d{1,}:[0-5]\d:[0-5]\d(?:\.\d{1,3})?$/.test(value))return NaN;
+ const p=value.split(':').map(Number);
  return p[0]*3600+p[1]*60+p[2];
 }
 function srtTime(s){
@@ -292,8 +293,27 @@ function render(){
   const end=document.createElement('input');
   end.value=time(r.end);
   end.title='End time';
-  start.onchange=()=>{r.start=parse(start.value);updatePreview()};
-  end.onchange=()=>{r.end=parse(end.value);updatePreview()};
+  start.onchange=()=>{
+   const value=parse(start.value);
+   if(!Number.isFinite(value)||value<0||value>=r.end){
+    start.value=time(r.start);
+    status('गलत शुरुआत का समय। इसे समाप्ति के समय से पहले रखें।');
+    return;
+   }
+   r.start=value;
+   updatePreview();
+  };
+  end.onchange=()=>{
+   const value=parse(end.value);
+   const duration=$('video').duration;
+   if(!Number.isFinite(value)||value<=r.start||value<0||(Number.isFinite(duration)&&value>duration)){
+    end.value=time(r.end);
+    status('गलत समाप्ति का समय। इसे शुरुआत के बाद और वीडियो की अवधि के अंदर रखें।');
+    return;
+   }
+   r.end=value;
+   updatePreview();
+  };
   times.append(start,end);
   const right=document.createElement('div');
   const ta=document.createElement('textarea');
@@ -329,6 +349,37 @@ function style(){
 ['size','color','background','style'].forEach(id=>$(id).oninput=style);
 
 
+function wavToFloat32(wav){
+ const view=new DataView(wav.buffer,wav.byteOffset,wav.byteLength);
+ const readText=(offset,length)=>String.fromCharCode(...new Uint8Array(wav.buffer,wav.byteOffset+offset,length));
+ if(readText(0,4)!=='RIFF'||readText(8,4)!=='WAVE')
+  throw new Error('Extracted audio is not a valid WAV file.');
+ let offset=12,format=null,channels=0,rate=0,bits=0,dataOffset=-1,dataSize=0;
+ while(offset+8<=wav.byteLength){
+  const id=readText(offset,4);
+  const size=view.getUint32(offset+4,true);
+  const start=offset+8;
+  if(start+size>wav.byteLength)throw new Error('Invalid WAV chunk size.');
+  if(id==='fmt '&&size>=16){
+   format=view.getUint16(start,true);
+   channels=view.getUint16(start+2,true);
+   rate=view.getUint32(start+4,true);
+   bits=view.getUint16(start+14,true);
+  }else if(id==='data'){
+   dataOffset=start;
+   dataSize=size;
+   break;
+  }
+  offset=start+size+(size%2);
+ }
+ if(format!==1||channels!==1||rate!==16000||bits!==16||dataOffset<0||dataSize<2)
+  throw new Error('Unexpected WAV format; expected 16 kHz mono PCM 16-bit.');
+ const count=Math.floor(dataSize/2);
+ const samples=new Float32Array(count);
+ for(let i=0;i<count;i++)samples[i]=view.getInt16(dataOffset+i*2,true)/32768;
+ return samples;
+}
+
 async function getAudio(){
  let audioFile=file;
 
@@ -343,7 +394,8 @@ async function getAudio(){
    '-c:a','pcm_s16le','ak-audio.wav'
   ]);
   const wav=await ff.readFile('ak-audio.wav');
-  audioFile=new Blob([wav],{type:'audio/wav'});
+  status('Preparing extracted audio for AI...');
+  return wavToFloat32(wav);
  }
 
  status('Converting audio to 16 kHz mono...');
@@ -488,7 +540,17 @@ $('export').onclick=async()=>{
   await ff.writeFile('captions.srt',new TextEncoder().encode(srt));
   await ff.writeFile('NotoSansDevanagari-Regular.ttf',await ffmpegFetchFile(new URL('./assets/fonts/NotoSansDevanagari-Regular.ttf',document.baseURI).href));
   status('Burning subtitles with Noto Sans Devanagari. This may take time...');
-  await ff.exec(['-i','input.'+ext,'-vf',"subtitles=captions.srt:fontsdir=.:force_style='FontName=Noto Sans Devanagari'",'-c:v','libx264','-preset','ultrafast','-c:a','aac','-b:a','128k','output.mp4']);
+  const size=Math.max(16,Math.min(48,Number($('size').value)||28));
+  const hex=$('color').value.replace('#','').toUpperCase();
+  const assColor='&H00'+hex.slice(4,6)+hex.slice(2,4)+hex.slice(0,2);
+  const mode=$('style').value;
+  const fontSize=mode==='reels'?Math.min(54,size+6):size;
+  const outline=mode==='reels'?4:mode==='karaoke'?3:2;
+  const shadow=mode==='classic'?1:0;
+  const boxed=$('background').value==='black';
+  const backColour=boxed?'&H00000000':'&HFF000000';
+  const forceStyle=`FontName=Noto Sans Devanagari,FontSize=${fontSize},PrimaryColour=${assColor},OutlineColour=&H00000000,BackColour=${backColour},BorderStyle=${boxed?3:1},Outline=${outline},Shadow=${shadow},Alignment=2,MarginV=35,Bold=1`;
+  await ff.exec(['-i','input.'+ext,'-vf',`subtitles=captions.srt:fontsdir=.:force_style='${forceStyle}'`,'-c:v','libx264','-preset','ultrafast','-c:a','aac','-b:a','128k','output.mp4']);
   const data=await ff.readFile('output.mp4');
   download(new Blob([data.buffer],{type:'video/mp4'}),'AK-Sub-AI.mp4');
   status('MP4 export complete!');

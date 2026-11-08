@@ -69,9 +69,6 @@ async function groqTranscribe(env, body) {
   form.set("model", "whisper-large-v3");
   form.set("response_format", "verbose_json");
   form.set("temperature", "0");
-  if (body.language === "hi") {
-    form.set("prompt", "यह हिंदी में बातचीत है। हर शब्द सही देवनागरी वर्तनी में लिखें। अंग्रेज़ी शब्द जैसे बोले गए हों वैसे ही लिखें।");
-  }
   if (typeof body.language === "string" && /^[a-z]{2,3}$/.test(body.language)) {
     form.set("language", body.language);
   }
@@ -87,11 +84,7 @@ async function groqTranscribe(env, body) {
     transcription_info: { language: j.language || null },
     vtt: "",
     words: [],
-    segments: (j.segments || [])
-      .filter(x => (x.no_speech_prob ?? 0) < 0.6 && (x.avg_logprob ?? 0) > -1.2 && (x.compression_ratio ?? 0) < 2.4)
-      .filter(x => !/thanks for watching|subscribe|www\\.|amara\\.org/i.test(x.text || ""))
-      .map(x => ({ start: x.start, end: x.end, text: String(x.text || "").trim() }))
-      .filter(x => x.text)
+    segments: (j.segments || []).map(x => ({ start: x.start, end: x.end, text: x.text }))
   };
 }
 

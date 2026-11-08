@@ -74,7 +74,15 @@ jobs:
               "aap kaise ho",
               "mujhe ghar jana hai",
               "kal milte hain",
-              "namaste bhai"
+              "namaste bhai",
+              "hum kal milte hain",
+              "aaj mausam bahut accha hai",
+              "mujhe aapse baat karni hai",
+              "kripya mujhe bataiye",
+              "yeh mera phone hai",
+              "main ghar par hoon",
+              "aapka naam kya hai",
+              "dhanyavaad bhai"
           ]
 
           print("\n===== TRANSLITERATION RESULTS =====")

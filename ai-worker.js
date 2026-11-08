@@ -90,21 +90,21 @@ async function transcribe(id,buffer,language){
 
 function isRomanHindi(text){
  const words=String(text||'').toLowerCase()
-  .replace(/[^a-z\s]/g,' ').split(/\s+/).filter(Boolean);
+  .replace(/[^a-z\\s]/g,' ').split(/\\s+/).filter(Boolean);
 
- const hints=new Set([
-  'aap','tum','main','mai','mujhe','hum','hume',
-  'hai','hain','ho','hu','tha','thi','the',
-  'kya','kaise','kaisa','kaisi','kyun','kyu',
-  'nahi','nahin','mera','meri','mere','tera','teri',
-  'kar','karo','karen','raha','rahi','rahe',
-  'ka','ki','ke','ko','se','mein','me','aur',
-  'bhai','acha','achha','theek','thik','chahiye',
-  'batao','bolo','kuch','sab','ab','kal','kab',
-  'kahan','yahan','wahan','liye','wala','wali'
+ const strong=new Set([
+  'aap','tum','mujhe','hum','hume','humein',
+  'hain','hai','hoon','hun','kya','kaise',
+  'kaisa','kaisi','kyun','kyu','nahi','nahin',
+  'mera','meri','mere','tera','teri','tere',
+  'raha','rahi','rahe','karo','karen',
+  'batao','bolo','bhai','acha','achha',
+  'theek','thik','chahiye','kahan','yahan',
+  'wahan','liye','wala','wali','hain'
  ]);
 
- return words.filter(w=>hints.has(w)).length>=2;
+ const hits=words.filter(w=>strong.has(w)).length;
+ return hits>=2 || (hits>=1 && words.length>=4);
 }
 
 async function translate(id,inputRows,selected){
@@ -115,7 +115,7 @@ async function translate(id,inputRows,selected){
 
  const translated=originals.map(r=>r.sourceText);
  const groups={};
- let preserved=0;
+ let preserved=0, hindiPreserved=0, uncertain=0;
 
  for(let i=0;i<originals.length;i++){
   const text=String(originals[i].sourceText||'').trim();
@@ -127,6 +127,7 @@ async function translate(id,inputRows,selected){
    // Native Hindi script: preserve it.
    if(isHindi(text)||isRomanHindi(text)){
     preserved++;
+    hindiPreserved++;
     continue;
    }
 
@@ -154,22 +155,26 @@ async function translate(id,inputRows,selected){
     if(!source||typeof prediction?.score!=='number'
        ||prediction.score<0.45){
      preserved++;
+     uncertain++;
      continue;
     }
    }catch(e){
     console.warn('Subtitle language detection skipped:',e);
     preserved++;
+    uncertain++;
     continue;
    }
   }
 
   if(source==='hindi'){
    preserved++;
+   hindiPreserved++;
    continue;
   }
 
   if(!codes[source]){
    preserved++;
+   uncertain++;
    continue;
   }
 
@@ -236,7 +241,10 @@ async function translate(id,inputRows,selected){
     results.forEach((r,j)=>{
      const value=String(r?.translation_text||'').trim();
      if(value)translated[batchIndexes[j]]=value;
-     else preserved++;
+     else{
+      preserved++;
+      uncertain++;
+     }
     });
    }
   }
@@ -245,7 +253,7 @@ async function translate(id,inputRows,selected){
  const count=originals.length-preserved;
  return {
   rows:originals.map((r,i)=>({...r,text:translated[i]})),
-  message:`Hindi ready: ${count} translated, ${preserved} preserved (Hindi/uncertain).`
+  message:`Hindi ready: ${count} translated, ${hindiPreserved} Hindi preserved, ${uncertain} uncertain lines unchanged.`
  };
 }
 

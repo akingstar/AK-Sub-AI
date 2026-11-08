@@ -90,7 +90,7 @@ async function transcribe(id,buffer,language){
 
 function isRomanHindi(text){
  const words=String(text||'').toLowerCase()
-  .replace(/[^a-z\\s]/g,' ').split(/\\s+/).filter(Boolean);
+  .replace(/[^a-z\s]/g,' ').split(/\s+/).filter(Boolean);
 
  const strong=new Set([
   'aap','tum','mujhe','hum','hume','humein',
@@ -142,11 +142,32 @@ async function translate(id,inputRows,selected){
      );
     }
 
-    const result=await detector(text.slice(0,500),{
+    let result=await detector(text.slice(0,500),{
      top_k:1,truncation:true
     });
-    const prediction=Array.isArray(result?.[0])
+    let prediction=Array.isArray(result?.[0])
      ?result[0][0]:result?.[0];
+
+    // Short subtitle fragments are hard to classify alone.
+    // Use nearby non-Hindi subtitle context when confidence is weak.
+    if((text.split(/\s+/).length<=3 || (prediction?.score??0)<0.65)
+       && originals.length>1){
+     const context=originals
+      .slice(Math.max(0,i-2),Math.min(originals.length,i+3))
+      .map(r=>String(r.sourceText||'').trim())
+      .filter(t=>t&&!isHindi(t)&&!isRomanHindi(t))
+      .join(' ').slice(0,500);
+
+     if(context&&context!==text){
+      const contextual=await detector(context,{
+       top_k:1,truncation:true
+      });
+      const candidate=Array.isArray(contextual?.[0])
+       ?contextual[0][0]:contextual?.[0];
+      if((candidate?.score??0)>(prediction?.score??0))
+       prediction=candidate;
+     }
+    }
 
     const key=String(prediction?.label||'').toLowerCase()
      .replace(/^__label__/,'').replace(/^label_/,'');

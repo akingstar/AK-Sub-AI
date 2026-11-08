@@ -236,16 +236,46 @@ async function transcribe(id, buffer, language, turnstileToken) {
     `Cloud transcription failed (${response.status}).`);
   }
 
+  const transcriptionInfo = payload.transcription_info || {};
+  const detectedLanguage =
+   typeof transcriptionInfo.language === 'string'
+    ? transcriptionInfo.language : null;
+  const languageProbability =
+   Number.isFinite(transcriptionInfo.language_probability)
+    ? transcriptionInfo.language_probability : null;
+
   let chunkRows = parseVttRows(payload.vtt, offsetSeconds);
 
-  if (!chunkRows.length && Array.isArray(payload.segments)) {
-   chunkRows = payload.segments.map(item => ({
-    start: offsetSeconds + Number(item.start ?? item.timestamp?.[0] ?? 0),
-    end: offsetSeconds + Number(item.end ?? item.timestamp?.[1] ??
-     (item.start ?? 0) + 2),
-    text: String(item.text || '').trim()
-   })).filter(r => r.text && Number.isFinite(r.start) &&
-    Number.isFinite(r.end) && r.end > r.start);
+  const segmentRows = Array.isArray(payload.segments)
+   ? payload.segments.map(item => ({
+      start: offsetSeconds + Number(item.start ?? item.timestamp?.[0] ?? 0),
+      end: offsetSeconds + Number(item.end ?? item.timestamp?.[1] ??
+       (item.start ?? 0) + 2),
+      text: String(item.text || '').trim()
+     })).filter(r => r.text && Number.isFinite(r.start) &&
+      Number.isFinite(r.end) && r.end > r.start)
+   : [];
+
+  if (!chunkRows.length && segmentRows.length) {
+   chunkRows = segmentRows;
+  }
+
+  // Hindi main text takes priority over English-only VTT output.
+  if (lang === 'hi' && isHindi(payload.text)) {
+   const rowsHaveHindi = chunkRows.some(row => isHindi(row.text));
+   const segmentsHaveHindi = segmentRows.some(row => isHindi(row.text));
+
+   if (!rowsHaveHindi) {
+    if (segmentsHaveHindi) {
+     chunkRows = segmentRows;
+    } else {
+     chunkRows = [{
+      start: offsetSeconds,
+      end: end / 16000,
+      text: String(payload.text).trim()
+     }];
+    }
+   }
   }
 
   if (!chunkRows.length) {
@@ -268,7 +298,12 @@ async function transcribe(id, buffer, language, turnstileToken) {
     }
 
     if (!text) continue;
-    rows.push({ ...row, text });
+    rows.push({
+     ...row,
+     text,
+     detectedLanguage,
+     languageProbability
+    });
    }
 
    // Save only the previous chunk's overlapping tail for the next chunk.
@@ -293,7 +328,9 @@ async function transcribe(id, buffer, language, turnstileToken) {
     rows.push({
      start: offsetSeconds,
      end: end / 16000,
-     text
+     text,
+     detectedLanguage,
+     languageProbability
     });
    }
 
@@ -441,8 +478,24 @@ async function translate(id,inputRows,selected){
   }
 
   if(source==='hindi'){
-   preserved++;
-   hindiPreserved++;
+   const hasLatinWords = /[A-Za-z]{2,}/.test(text);
+
+   // Preserve pure Devanagari Hindi.
+   if(isHindi(text) && !hasLatinWords){
+    preserved++;
+    hindiPreserved++;
+    continue;
+   }
+
+   // Translate only Latin phrases in mixed Hindi-English subtitles.
+   if(isHindi(text) && hasLatinWords){
+    (groups.mixed??=[]).push(i);
+    continue;
+   }
+
+   // In Hindi mode, convert Latin-script transcription to Hindi.
+   // This also handles Roman Hindi and English-only ASR output.
+   (groups.english??=[]).push(i);
    continue;
   }
 

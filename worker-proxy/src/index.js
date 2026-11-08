@@ -149,13 +149,16 @@ export default {
           });
         }
 
+        const isHindiRequest = body.language === "hi";
+
         const input = {
           audio: body.audio,
           task: "transcribe",
           vad_filter: false,
           condition_on_previous_text: false,
-          initial_prompt:
-            "Accurately transcribe the spoken words in their original language. The audio may contain Hindi, English, or mixed Hindi-English speech. Do not translate or invent missing words."
+          initial_prompt: isHindiRequest
+            ? "Transcribe spoken Hindi in Devanagari script. Keep English words in Latin script only when they are actually spoken in English. Do not translate Hindi speech into English. Do not invent or omit words."
+            : "Accurately transcribe the spoken words in their original language. The audio may contain Hindi, English, or mixed Hindi-English speech. Do not translate or invent missing words."
         };
 
         if (typeof body.language === "string" &&
@@ -174,8 +177,16 @@ export default {
           }, { status: 502, headers: cors });
         }
 
+        const info = result.transcription_info || {};
+
         return Response.json({
           text: result.text,
+          transcription_info: {
+            language: typeof info.language === "string" ? info.language : null,
+            language_probability: Number.isFinite(info.language_probability)
+              ? info.language_probability
+              : null
+          },
           vtt: result.vtt || "",
           words: Array.isArray(result.words) ? result.words : [],
           segments: Array.isArray(result.segments) ? result.segments : []

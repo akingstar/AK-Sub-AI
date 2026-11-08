@@ -176,6 +176,27 @@ function wordsToRows(words, offset) {
  return rows;
 }
 
+function cleanAudio(input) {
+ // 1) high-pass ~80 Hz (removes hum/DC), 2) gentle normalize with capped gain
+ const out = new Float32Array(input.length);
+ const a = Math.exp(-2 * Math.PI * 80 / 16000);
+ let prevIn = 0, prevOut = 0, peak = 0;
+ for (let i = 0; i < input.length; i++) {
+  const x = input[i];
+  const y = a * (prevOut + x - prevIn);
+  prevIn = x; prevOut = y;
+  out[i] = y;
+  const m = Math.abs(y);
+  if (m > peak) peak = m;
+ }
+ if (peak < 0.005) return input;          // almost silent, leave untouched
+ const gain = Math.min(0.9 / peak, 6);    // never boost more than 6x
+ if (gain > 1.05 || gain < 0.95) {
+  for (let i = 0; i < out.length; i++) out[i] *= gain;
+ }
+ return out;
+}
+
 function planChunks(samples, maxLen, overlap) {
  const sr = 16000, frame = 1600, minLen = 15 * sr;
  const plan = [];
@@ -200,7 +221,7 @@ function planChunks(samples, maxLen, overlap) {
 }
 
 async function cloudTranscribe(id, buffer, language, turnstileToken) {
- const samples = new Float32Array(buffer);
+ const samples = cleanAudio(new Float32Array(buffer));
  if (!samples.length) throw Error('Audio is empty.');
 
  const chunkSize = 30 * 16000;

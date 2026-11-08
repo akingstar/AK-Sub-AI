@@ -34,7 +34,7 @@ jobs:
           python -m pip install torch==1.13.1+cpu torchaudio==0.13.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu
           python -m pip install Cython==0.29.36 PyYAML==6.0.1 omegaconf==2.0.6 hydra-core==1.0.7
           python -m pip install pydload tqdm ninja
-          python -m pip install --no-build-isolation fairseq==0.12.2
+          python -m pip install --no-build-isolation "git+https://github.com/facebookresearch/fairseq.git@v0.12.2"
 
       - name: Prepare official IndicXlit model
         run: |

@@ -208,10 +208,11 @@ async function transcribe(id, buffer, language, turnstileToken) {
  const sessionToken = authPayload.sessionToken;
 
  const rows = [];
- let previousText = '';
+ let previousChunkTail = '';
 
  for (let offset = 0; offset < samples.length; offset += step) {
   const end = Math.min(samples.length, offset + chunkSize);
+  const offsetSeconds = offset / 16000;
   const seconds = Math.ceil(samples.length / 16000);
 
   progress(id,
@@ -235,12 +236,12 @@ async function transcribe(id, buffer, language, turnstileToken) {
     `Cloud transcription failed (${response.status}).`);
   }
 
-  let chunkRows = parseVttRows(payload.vtt, offset);
+  let chunkRows = parseVttRows(payload.vtt, offsetSeconds);
 
   if (!chunkRows.length && Array.isArray(payload.segments)) {
    chunkRows = payload.segments.map(item => ({
-    start: offset + Number(item.start ?? item.timestamp?.[0] ?? 0),
-    end: offset + Number(item.end ?? item.timestamp?.[1] ??
+    start: offsetSeconds + Number(item.start ?? item.timestamp?.[0] ?? 0),
+    end: offsetSeconds + Number(item.end ?? item.timestamp?.[1] ??
      (item.start ?? 0) + 2),
     text: String(item.text || '').trim()
    })).filter(r => r.text && Number.isFinite(r.start) &&
@@ -248,26 +249,56 @@ async function transcribe(id, buffer, language, turnstileToken) {
   }
 
   if (!chunkRows.length) {
-   chunkRows = wordsToRows(payload.words, offset);
+   chunkRows = wordsToRows(payload.words, offsetSeconds);
   }
 
   if (chunkRows.length) {
+   let firstRowHandled = false;
+   const overlapEnd = offset / 16000 + overlap / 16000;
+
    for (const row of chunkRows) {
-    const text = cleanOverlap(previousText, row.text);
+    let text = String(row.text || '').trim();
+
+    // Remove duplicate speech only at the beginning of a new chunk.
+    if (!firstRowHandled) {
+     firstRowHandled = true;
+     if (offset > 0 && row.start < overlapEnd) {
+      text = cleanOverlap(previousChunkTail, text);
+     }
+    }
+
     if (!text) continue;
     rows.push({ ...row, text });
-    previousText = text;
    }
+
+   // Save only the previous chunk's overlapping tail for the next chunk.
+   const tailStart = Math.max(
+    offset / 16000,
+    end / 16000 - overlap / 16000
+   );
+   previousChunkTail = chunkRows
+    .filter(row => row.end > tailStart)
+    .map(row => String(row.text || '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .split(/\s+/)
+    .slice(-12)
+    .join(' ');
+
   } else if (payload.text) {
-   const text = cleanOverlap(previousText, payload.text);
+   let text = String(payload.text).trim();
+   if (offset > 0) text = cleanOverlap(previousChunkTail, text);
+
    if (text) {
     rows.push({
-     start: offset / 16000,
+     start: offsetSeconds,
      end: end / 16000,
      text
     });
-    previousText = text;
    }
+
+   previousChunkTail = String(payload.text)
+    .trim().split(/\s+/).slice(-12).join(' ');
   }
 
   if (end === samples.length) break;

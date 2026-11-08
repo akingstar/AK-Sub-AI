@@ -40,6 +40,24 @@ select{width:100%}
 .badge{font-size:11px;color:#a99aff;background:#292348;padding:5px 9px;border-radius:20px}
 footer{text-align:center;padding:30px;color:#8994aa;font-size:12px}
 @media(max-width:800px){.layout{grid-template-columns:1fr}header{padding:0 15px}main{padding:18px 12px}}
+
+.vip-library{margin-top:18px;padding:14px;background:#0b1220;border:1px solid #303b53;border-radius:12px}
+.vip-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.vip-heading h3{margin:0 0 4px;font-size:16px}
+.vip-heading p{margin:0 0 12px}
+.template-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
+.template-card{min-width:0;text-align:left;padding:10px;background:#151e30;border:1px solid #34415d;border-radius:10px;color:#edf1ff}
+.template-card.active{border:2px solid #9a86ff;background:#272044;box-shadow:0 0 0 2px #7560ff22}
+.template-sample{display:flex;align-items:center;justify-content:center;min-height:43px;border-radius:7px;margin-bottom:8px;padding:6px;text-align:center;font-size:13px;font-weight:900;text-shadow:1px 2px 3px #000;overflow:hidden}
+.template-name{display:block;font-size:12px;font-weight:800}
+.editor-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.editor-toolbar input{flex:1;min-width:150px}
+.editor-toolbar button{padding:9px 12px;font-size:12px}
+.segment{padding:8px;border:1px solid transparent;border-radius:10px}
+.segment.selected{border-color:#8b78ff;background:#1b2340}
+.segment textarea{min-height:70px}
+@media(max-width:520px){.template-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.editor-toolbar button{flex:1}}
+
 </style>
 </head>
 <body>
@@ -132,6 +150,13 @@ footer{text-align:center;padding:30px;color:#8994aa;font-size:12px}
      <option value="black">Black background</option>
     </select>
    </div>
+   <div class="vip-library">
+    <div class="vip-heading">
+     <div><h3>✦ VIP Template Library</h3><p class="muted">20 ready-made subtitle looks. Tap a preset to preview it.</p></div>
+     <span class="badge">20 STYLES</span>
+    </div>
+    <div id="templateGallery" class="template-grid"></div>
+   </div>
    <div class="actions">
     <button class="secondary" id="translate">Translate to Hindi</button>
     <button class="secondary" id="reset">Reset style</button>
@@ -143,11 +168,21 @@ footer{text-align:center;padding:30px;color:#8994aa;font-size:12px}
  <section class="panel" style="margin-top:18px">
   <h3>✎ Subtitle timeline <span class="badge" id="count">0 lines</span></h3>
   <p class="muted">Edit the text and start/end timestamps. Changes appear in the video preview.</p>
+  <div class="editor-toolbar">
+   <input id="subtitleSearch" type="search" placeholder="Search subtitle text...">
+   <button class="secondary" id="undo" type="button">↶ Undo</button>
+   <button class="secondary" id="redo" type="button">↷ Redo</button>
+  </div>
+  <div class="editor-toolbar">
+   <button id="add" class="secondary" type="button">+ Add Text</button>
+   <button class="secondary" id="duplicate" type="button">Duplicate</button>
+   <button class="secondary" id="split" type="button">Split at playhead</button>
+   <button class="secondary" id="merge" type="button">Merge next</button>
+  </div>
   <div class="timeline" id="timeline">
    <p class="muted">Your generated subtitles will appear here.</p>
   </div>
   <div class="controls">
-   <button id="add" class="secondary">+ Add subtitle</button>
    <button id="export">Export MP4 with subtitles</button>
   </div>
  </section>
@@ -160,6 +195,9 @@ footer{text-align:center;padding:30px;color:#8994aa;font-size:12px}
 const $=id=>document.getElementById(id);
 let file=null, videoURL=null, rows=[];
 let busy=false;
+let selectedRowIndex=-1;
+let activeTemplate="classic";
+let historyStack=[],redoStack=[];
 let translationStage='general processing';
 
 const aiWorker=new Worker(
@@ -283,53 +321,65 @@ function srtTime(s){
 }
 function render(){
  $('count').textContent=rows.length+' lines';
- $('timeline').innerHTML='';
+ const timeline=$('timeline');
+ timeline.innerHTML='';
+ const query=($('subtitleSearch')?.value||'').trim().toLowerCase();
  rows.forEach((r,i)=>{
+  if(query&&!String(r.text).toLowerCase().includes(query))return;
   const div=document.createElement('div');
-  div.className='segment';
+  div.className='segment'+(i===selectedRowIndex?' selected':'');
+  div.onclick=()=>{selectedRowIndex=i;timeline.querySelectorAll('.segment').forEach(x=>x.classList.remove('selected'));div.classList.add('selected')};
+
   const times=document.createElement('div');
   const start=document.createElement('input');
-  start.value=time(r.start);
-  start.title='Start time';
+  start.value=time(r.start);start.title='Start time';
   const end=document.createElement('input');
-  end.value=time(r.end);
-  end.title='End time';
+  end.value=time(r.end);end.title='End time';
+
   start.onchange=()=>{
    const value=parse(start.value);
    if(!Number.isFinite(value)||value<0||value>=r.end){
-    start.value=time(r.start);
-    status('गलत शुरुआत का समय। इसे समाप्ति के समय से पहले रखें।');
-    return;
+    start.value=time(r.start);status('Invalid start time. Keep it before the end time.');return;
    }
-   r.start=value;
-   updatePreview();
+   saveHistory();r.start=value;updatePreview();
   };
   end.onchange=()=>{
-   const value=parse(end.value);
-   const duration=$('video').duration;
+   const value=parse(end.value),duration=$('video').duration;
    if(!Number.isFinite(value)||value<=r.start||value<0||(Number.isFinite(duration)&&value>duration)){
-    end.value=time(r.end);
-    status('गलत समाप्ति का समय। इसे शुरुआत के बाद और वीडियो की अवधि के अंदर रखें।');
-    return;
+    end.value=time(r.end);status('Invalid end time. Keep it after the start and within the video.');return;
    }
-   r.end=value;
-   updatePreview();
+   saveHistory();r.end=value;updatePreview();
   };
   times.append(start,end);
+
   const right=document.createElement('div');
   const ta=document.createElement('textarea');
-  ta.value=r.text;
+  ta.value=r.text;ta.placeholder='Type subtitle text...';
+  ta.onfocus=()=>{selectedRowIndex=i;ta.dataset.before=JSON.stringify(rows)};
   ta.oninput=()=>{r.text=ta.value;updatePreview()};
+  ta.onblur=()=>{
+   if(ta.dataset.before&&ta.dataset.before!==JSON.stringify(rows)){
+    historyStack.push(ta.dataset.before);
+    if(historyStack.length>80)historyStack.shift();
+    redoStack=[];
+   }
+  };
+
   const del=document.createElement('button');
-  del.className='secondary';
-  del.textContent='Delete';
+  del.className='secondary';del.textContent='Delete';del.type='button';
   del.style.marginTop='5px';
-  del.onclick=()=>{rows.splice(i,1);render()};
-  right.append(ta,del);
-  div.append(times,right);
-  $('timeline').append(div);
+  del.onclick=e=>{
+   e.stopPropagation();saveHistory();rows.splice(i,1);
+   selectedRowIndex=Math.min(i,rows.length-1);render();
+  };
+  right.append(ta,del);div.append(times,right);timeline.append(div);
  });
  updatePreview();
+ if(selectedRowIndex>=0&&selectedRowIndex<rows.length){
+  const selected=timeline.querySelectorAll('.segment');
+  const visibleIndex=rows.slice(0,selectedRowIndex+1).filter(r=>!query||String(r.text).toLowerCase().includes(query)).length-1;
+  if(selected[visibleIndex])selected[visibleIndex].classList.add('selected');
+ }
 }
 function updatePreview(){
  const t=$('video').currentTime;
@@ -338,14 +388,84 @@ function updatePreview(){
 }
 $('video').ontimeupdate=updatePreview;
 
+
+const vipTemplates=[
+ {id:'classic',label:'Classic Pro',color:'#ffffff',bg:'transparent',size:28,outline:2,shadow:1,alignment:2,marginV:35,align:'center',bold:1},
+ {id:'cinematic',label:'Cinematic',color:'#ffffff',bg:'transparent',size:30,outline:3,shadow:2,alignment:2,marginV:48,align:'center',bold:1},
+ {id:'viralYellow',label:'Viral Yellow',color:'#ffe600',bg:'transparent',size:34,outline:4,shadow:2,alignment:2,marginV:45,align:'center',bold:1},
+ {id:'viralWhite',label:'Viral White',color:'#ffffff',bg:'transparent',size:34,outline:4,shadow:2,alignment:2,marginV:45,align:'center',bold:1},
+ {id:'karaokeGlow',label:'Karaoke Glow',color:'#00f5ff',bg:'transparent',size:32,outline:3,shadow:2,alignment:2,marginV:42,align:'center',bold:1,glow:'#00d9ff'},
+ {id:'neon',label:'Neon Purple',color:'#e6c8ff',bg:'transparent',size:32,outline:2,shadow:2,alignment:2,marginV:42,align:'center',bold:1,glow:'#9b35ff'},
+ {id:'podcast',label:'Podcast',color:'#ffffff',bg:'black',size:26,outline:1,shadow:1,alignment:2,marginV:35,align:'center',bold:1},
+ {id:'news',label:'News Flash',color:'#ffffff',bg:'black',size:27,outline:2,shadow:1,alignment:8,marginV:35,align:'center',bold:1,position:'top'},
+ {id:'gaming',label:'Gaming',color:'#7dff54',bg:'transparent',size:34,outline:4,shadow:2,alignment:2,marginV:40,align:'center',bold:1},
+ {id:'minimal',label:'Minimal Clean',color:'#ffffff',bg:'transparent',size:24,outline:1,shadow:1,alignment:2,marginV:32,align:'center',bold:0},
+ {id:'luxury',label:'Luxury Gold',color:'#f6d77b',bg:'transparent',size:30,outline:2,shadow:2,alignment:2,marginV:42,align:'center',bold:1},
+ {id:'documentary',label:'Documentary',color:'#f3f0e8',bg:'black',size:25,outline:1,shadow:1,alignment:2,marginV:38,align:'center',bold:0},
+ {id:'redAlert',label:'Red Alert',color:'#ff5252',bg:'transparent',size:33,outline:4,shadow:2,alignment:2,marginV:43,align:'center',bold:1},
+ {id:'aqua',label:'Aqua Blue',color:'#72edff',bg:'transparent',size:31,outline:3,shadow:2,alignment:2,marginV:42,align:'center',bold:1},
+ {id:'green',label:'Fresh Green',color:'#8dff9b',bg:'transparent',size:30,outline:3,shadow:2,alignment:2,marginV:42,align:'center',bold:1},
+ {id:'pink',label:'Pink Pop',color:'#ff9bd4',bg:'transparent',size:32,outline:3,shadow:2,alignment:2,marginV:42,align:'center',bold:1},
+ {id:'topTitle',label:'Top Caption',color:'#ffffff',bg:'black',size:27,outline:2,shadow:1,alignment:8,marginV:55,align:'center',bold:1,position:'top'},
+ {id:'leftCaption',label:'Left Caption',color:'#ffffff',bg:'transparent',size:27,outline:3,shadow:2,alignment:1,marginV:45,align:'left',bold:1},
+ {id:'rightCaption',label:'Right Caption',color:'#ffffff',bg:'transparent',size:27,outline:3,shadow:2,alignment:3,marginV:45,align:'right',bold:1},
+ {id:'boxPro',label:'Box Pro',color:'#ffffff',bg:'black',size:29,outline:1,shadow:1,alignment:2,marginV:40,align:'center',bold:1}
+];
+
+function saveHistory(){
+ historyStack.push(JSON.stringify(rows));
+ if(historyStack.length>80)historyStack.shift();
+ redoStack=[];
+}
+function restoreRows(snapshot){
+ rows=JSON.parse(snapshot);
+ selectedRowIndex=Math.min(selectedRowIndex,rows.length-1);
+ render();
+}
+function renderTemplateGallery(){
+ const gallery=$('templateGallery');
+ if(!gallery)return;
+ gallery.innerHTML='';
+ vipTemplates.forEach(p=>{
+  const b=document.createElement('button');
+  b.type='button';b.className='template-card'+(p.id===activeTemplate?' active':'');
+  const sample=document.createElement('span');
+  sample.className='template-sample';sample.textContent='Your subtitle';
+  sample.style.color=p.color;
+  sample.style.background=p.bg==='black'?'#000':'#182238';
+  sample.style.fontSize='13px';
+  sample.style.textShadow=p.glow?'0 0 8px '+p.glow+',1px 2px 3px #000':'1px 2px 3px #000';
+  const name=document.createElement('span');name.className='template-name';name.textContent=p.label;
+  b.append(sample,name);b.onclick=()=>applyTemplate(p.id);gallery.append(b);
+ });
+}
+function applyTemplate(id){
+ const p=vipTemplates.find(x=>x.id===id);
+ if(!p)return;
+ activeTemplate=id;
+ $('size').value=p.size;$('color').value=p.color;$('background').value=p.bg;
+ $('style').value=id==='karaokeGlow'?'karaoke':(['viralYellow','viralWhite','gaming','redAlert'].includes(id)?'reels':'classic');
+ renderTemplateGallery();renderTemplateGallery();style();
+ status('Template applied: '+p.label);
+}
+
 function style(){
  const o=$('overlay');
+ const p=vipTemplates.find(x=>x.id===activeTemplate)||vipTemplates[0];
+ const mode=$('style').value;
  o.style.fontSize=$('size').value+'px';
  o.style.color=$('color').value;
  o.style.background=$('background').value==='black'?'#000b':'transparent';
  o.style.padding='7px';
  o.style.borderRadius='5px';
- o.style.fontWeight=$('style').value==='classic'?'700':'900';
+ o.style.fontWeight=(mode==='classic'&&p.bold===0)?'500':'900';
+ o.style.fontStyle=p.italic?'italic':'normal';
+ o.style.textAlign=p.align||'center';
+ o.style.top=p.position==='top'?'12%':'auto';
+ o.style.bottom=p.position==='top'?'auto':'12%';
+ o.style.left=p.align==='left'?'5%':(p.align==='right'?'15%':'5%');
+ o.style.right=p.align==='right'?'5%':(p.align==='left'?'15%':'5%');
+ o.style.textShadow=p.glow?'0 0 8px '+p.glow+',2px 3px 5px #000':'2px 3px 5px #000,-1px -1px 2px #000';
 }
 ['size','color','background','style'].forEach(id=>$(id).oninput=style);
 
@@ -389,14 +509,20 @@ async function getAudio(){
   const ff=await getFFmpeg();
   const ext=(file.name.split('.').pop()||'mp4').replace(/[^a-z0-9]/gi,'')||'mp4';
   await ff.writeFile('ak-source.'+ext,await ffmpegFetchFile(file));
-  await ff.exec([
-   '-i','ak-source.'+ext,
+  const ffmpegExitCode=await ff.exec([
+   '-y','-i','ak-source.'+ext,
    '-vn','-ac','1','-ar','16000',
    '-c:a','pcm_s16le','ak-audio.wav'
   ]);
+  if(ffmpegExitCode!==0){
+   throw new Error('Audio extraction failed. FFmpeg exit code: '+ffmpegExitCode);
+  }
   const wav=await ff.readFile('ak-audio.wav');
   status('Preparing extracted audio for AI...');
-  return wavToFloat32(wav);
+  const audio=wavToFloat32(wav);
+  if(!audio.length)throw new Error('Extracted audio is empty.');
+  status('Audio extracted: '+Math.floor(audio.length/16000)+' seconds.');
+  return audio;
  }
 
  status('Converting audio to 16 kHz mono...');
@@ -640,12 +766,49 @@ $('translate').onclick=async()=>{
 
 $('add').onclick=()=>{
  const t=$('video').currentTime||0;
- rows.push({start:t,end:t+3,text:'अपना सबटाइटल यहाँ लिखें'});
- render();
+ saveHistory();rows.push({start:t,end:t+3,text:'अपना subtitle यहाँ लिखें'});
+ selectedRowIndex=rows.length-1;render();
 };
+$('duplicate').onclick=()=>{
+ if(selectedRowIndex<0||!rows[selectedRowIndex])return alert('Select a subtitle line first.');
+ const r=rows[selectedRowIndex],duration=Math.max(.5,r.end-r.start);
+ let start=r.end,end=start+duration;
+ const videoDuration=$('video').duration;
+ if(Number.isFinite(videoDuration)&&end>videoDuration){end=videoDuration;start=Math.max(0,end-duration)}
+ if(end<=start)return alert('Not enough video duration to duplicate this line.');
+ saveHistory();rows.splice(selectedRowIndex+1,0,{start,end,text:r.text});
+ selectedRowIndex++;render();
+};
+$('split').onclick=()=>{
+ if(selectedRowIndex<0||!rows[selectedRowIndex])return alert('Select a subtitle line first.');
+ const r=rows[selectedRowIndex],t=$('video').currentTime;
+ const splitAt=(t>r.start&&t<r.end)?t:(r.start+r.end)/2;
+ if(splitAt-r.start<.1||r.end-splitAt<.1)return alert('The subtitle is too short to split here.');
+ const words=String(r.text).trim().split(/\s+/),half=Math.max(1,Math.ceil(words.length/2));
+ saveHistory();
+ const second={start:splitAt,end:r.end,text:words.slice(half).join(' ')};
+ r.end=splitAt;r.text=words.slice(0,half).join(' ');
+ rows.splice(selectedRowIndex+1,0,second);selectedRowIndex++;render();
+};
+$('merge').onclick=()=>{
+ if(selectedRowIndex<0||!rows[selectedRowIndex]||!rows[selectedRowIndex+1])return alert('Select a line that has a next line.');
+ saveHistory();
+ rows[selectedRowIndex].end=rows[selectedRowIndex+1].end;
+ rows[selectedRowIndex].text=(rows[selectedRowIndex].text+' '+rows[selectedRowIndex+1].text).trim();
+ rows.splice(selectedRowIndex+1,1);render();
+};
+$('undo').onclick=()=>{
+ if(!historyStack.length)return;
+ redoStack.push(JSON.stringify(rows));restoreRows(historyStack.pop());
+};
+$('redo').onclick=()=>{
+ if(!redoStack.length)return;
+ historyStack.push(JSON.stringify(rows));restoreRows(redoStack.pop());
+};
+$('subtitleSearch').oninput=render;
 $('reset').onclick=()=>{
  $('size').value=28;$('color').value='#ffffff';
- $('background').value='transparent';$('style').value='classic';style();
+ $('background').value='transparent';$('style').value='classic';activeTemplate='classic';renderTemplateGallery();style();
 };
 $('srt').onclick=()=>{
  if(!rows.length)return alert('No subtitles to download.');
@@ -679,13 +842,30 @@ $('export').onclick=async()=>{
   const hex=$('color').value.replace('#','').toUpperCase();
   const assColor='&H00'+hex.slice(4,6)+hex.slice(2,4)+hex.slice(0,2);
   const mode=$('style').value;
-  const fontSize=mode==='reels'?Math.min(54,size+6):size;
-  const outline=mode==='reels'?4:mode==='karaoke'?3:2;
-  const shadow=mode==='classic'?1:0;
+  const preset=vipTemplates.find(x=>x.id===activeTemplate)||vipTemplates[0];
+  const fontSize=mode==='reels'?Math.min(72,size+6):size;
+  const outline=Math.max(1,Number(preset.outline)||2);
+  const shadow=Math.max(0,Number(preset.shadow)||0);
   const boxed=$('background').value==='black';
   const backColour=boxed?'&H00000000':'&HFF000000';
-  const forceStyle=`FontName=Noto Sans Devanagari,FontSize=${fontSize},PrimaryColour=${assColor},OutlineColour=&H00000000,BackColour=${backColour},BorderStyle=${boxed?3:1},Outline=${outline},Shadow=${shadow},Alignment=2,MarginV=35,Bold=1`;
-  await ff.exec(['-i','input.'+ext,'-vf',`subtitles=captions.srt:fontsdir=.:force_style='${forceStyle}'`,'-c:v','libx264','-preset','ultrafast','-c:a','aac','-b:a','128k','output.mp4']);
+  const alignment=Number(preset.alignment)||2;
+  const marginV=Number(preset.marginV)||35;
+  const bold=Number(preset.bold)?1:0;
+  const italic=preset.italic?1:0;
+  const forceStyle=`FontName=Noto Sans Devanagari,FontSize=${fontSize},PrimaryColour=${assColor},OutlineColour=&H00000000,BackColour=${backColour},BorderStyle=${boxed?3:1},Outline=${outline},Shadow=${shadow},Alignment=${alignment},MarginV=${marginV},Bold=${bold},Italic=${italic}`;
+  await ff.exec([
+   '-i','input.'+ext,
+   '-map','0:v:0','-map','0:a?',
+   '-vf',`subtitles=captions.srt:fontsdir=.:force_style='${forceStyle}'`,
+   '-c:v','libx264',
+   '-preset','medium',
+   '-crf','18',
+   '-pix_fmt','yuv420p',
+   '-c:a','aac',
+   '-b:a','192k',
+   '-movflags','+faststart',
+   'output.mp4'
+  ]);
   const data=await ff.readFile('output.mp4');
   download(new Blob([data.buffer],{type:'video/mp4'}),'AK-Sub-AI.mp4');
   status('MP4 export complete!');
@@ -694,6 +874,7 @@ $('export').onclick=async()=>{
   console.error(e);
  }finally{busy=false;$('export').disabled=false}
 };
+renderTemplateGallery();
 style();
 </script>
 </body>

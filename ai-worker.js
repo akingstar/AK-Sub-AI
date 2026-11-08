@@ -61,7 +61,7 @@ async function transcribe(id,buffer,language){
   progress(id,'Loading Whisper in background...');
   asr=await pipeline(
    'automatic-speech-recognition',
-   'onnx-community/whisper-tiny',
+   'onnx-community/whisper-base',
    {dtype:'q8'}
   );
  }

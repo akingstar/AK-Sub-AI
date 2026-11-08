@@ -59,6 +59,30 @@ jobs:
           path: indicxlit-source/app/ai4bharat/transliteration/transformer/models/v1.0/word_prob_dicts
           key: indicxlit-hi-word-dictionaries-v1
 
+      - name: Download and verify official Hindi rescoring dictionary
+        run: |
+          MODEL_DIR="indicxlit-source/app/ai4bharat/transliteration/transformer/models/v1.0"
+          DICT_DIR="$MODEL_DIR/word_prob_dicts"
+          DICT_FILE="$DICT_DIR/hi_word_prob_dict.json"
+
+          if [ -s "$DICT_FILE" ]; then
+            echo "Hindi rescoring dictionary already available from cache."
+          else
+            mkdir -p "$MODEL_DIR"
+
+            curl --fail --show-error --location --retry 3 --retry-all-errors \\
+              --connect-timeout 30 \\
+              "https://storage.googleapis.com/indic-xlit-public/final_model/word_prob_dicts.zip" \\
+              --output "$RUNNER_TEMP/word_prob_dicts.zip"
+
+            unzip -tq "$RUNNER_TEMP/word_prob_dicts.zip"
+            unzip -oq "$RUNNER_TEMP/word_prob_dicts.zip" -d "$MODEL_DIR"
+
+            test -s "$DICT_FILE"
+            rm "$RUNNER_TEMP/word_prob_dicts.zip"
+            echo "Official Hindi rescoring dictionary verified."
+          fi
+
       - name: Test Hindi transliteration with rescoring
         env:
           PYTHONPATH: indicxlit-source/app

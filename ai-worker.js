@@ -176,6 +176,29 @@ function wordsToRows(words, offset) {
  return rows;
 }
 
+function planChunks(samples, maxLen, overlap) {
+ const sr = 16000, frame = 1600, minLen = 15 * sr;
+ const plan = [];
+ let offset = 0;
+ while (offset < samples.length) {
+  let end = Math.min(samples.length, offset + maxLen);
+  if (offset + maxLen < samples.length) {
+   let best = -1, bestE = Infinity;
+   const from = offset + minLen, to = offset + maxLen - sr;
+   for (let p = from; p + frame <= to; p += frame) {
+    let e = 0;
+    for (let i = p; i < p + frame; i++) e += samples[i] * samples[i];
+    if (e < bestE) { bestE = e; best = p + (frame >> 1); }
+   }
+   if (best > 0) end = best;
+  }
+  plan.push({ offset, end });
+  if (end >= samples.length) break;
+  offset = Math.max(offset + 1, end - overlap);
+ }
+ return plan;
+}
+
 async function cloudTranscribe(id, buffer, language, turnstileToken) {
  const samples = new Float32Array(buffer);
  if (!samples.length) throw Error('Audio is empty.');
@@ -210,8 +233,8 @@ async function cloudTranscribe(id, buffer, language, turnstileToken) {
  const rows = [];
  let previousChunkTail = '';
 
- for (let offset = 0; offset < samples.length; offset += step) {
-  const end = Math.min(samples.length, offset + chunkSize);
+ const plan = planChunks(samples, chunkSize, overlap);
+ for (const { offset, end } of plan) {
   const offsetSeconds = offset / 16000;
   const seconds = Math.ceil(samples.length / 16000);
 

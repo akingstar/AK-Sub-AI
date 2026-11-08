@@ -62,6 +62,45 @@ async function checkSession(token,secret) {
  } catch { return false; }
 }
 
+async function groqTranscribe(env, body) {
+  const bytes = Uint8Array.from(atob(body.audio), c => c.charCodeAt(0));
+  const form = new FormData();
+  form.set("file", new Blob([bytes], { type: "audio/wav" }), "audio.wav");
+  form.set("model", "whisper-large-v3");
+  form.set("response_format", "verbose_json");
+  form.set("temperature", "0");
+  if (typeof body.language === "string" && /^[a-z]{2,3}$/.test(body.language)) {
+    form.set("language", body.language);
+  }
+  const r = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: "Bearer " + env.GROQ_API_KEY },
+    body: form
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error("Groq error " + r.status + ": " + (j?.error?.message || ""));
+  return {
+    text: j.text || "",
+    transcription_info: { language: j.language || null },
+    vtt: "",
+    words: [],
+    segments: (j.segments || []).map(x => ({ start: x.start, end: x.end, text: x.text }))
+  };
+}
+
+async function runTranscribe(env, input, body) {
+  try {
+    return await env.AI.run("@cf/openai/whisper-large-v3-turbo", input);
+  } catch (e) {
+    if (!env.GROQ_API_KEY) throw e;
+    try {
+      return await groqTranscribe(env, body);
+    } catch (g) {
+      throw new Error((e?.message || String(e)) + " | " + (g?.message || String(g)));
+    }
+  }
+}
+
 export default {
   async fetch(request, env) {
     const cors = {
@@ -166,10 +205,7 @@ export default {
           input.language = body.language;
         }
 
-        const result = await env.AI.run(
-          "@cf/openai/whisper-large-v3-turbo",
-          input
-        );
+        const result = await runTranscribe(env, input, body);
 
         if (!result || typeof result.text !== "string") {
           return Response.json({

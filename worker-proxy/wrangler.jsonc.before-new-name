@@ -1,6 +1,0 @@
-{
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "proud-art-0cb5ak-sub-ai-model-proxy-api",
-  "main": "src/index.js",
-  "compatibility_date": "2026-11-07"
-}

@@ -103,7 +103,7 @@ export default {
         if(!result.success ||
            result.hostname!==ALLOWED_TURNSTILE_HOSTNAME ||
            result.action!==TURNSTILE_ACTION) {
-          return Response.json({error:"Security check failed. Please retry."},{status:403,headers:cors});
+          return Response.json({error:"Security check failed. Please retry.",codes:result["error-codes"]||[],hostname:result.hostname||null,action:result.action||null},{status:403,headers:cors});
         }
         return Response.json({sessionToken:await makeSession(env.TURNSTILE_SECRET)},{headers:cors});
       } catch(error) {

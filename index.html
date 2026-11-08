@@ -201,7 +201,7 @@ let historyStack=[],redoStack=[];
 let translationStage='general processing';
 
 const aiWorker=new Worker(
- new URL('./ai-worker.js?v=2',import.meta.url),
+ new URL('./ai-worker.js?v=3',import.meta.url),
  {type:'module'}
 );
 let workerSequence=0;

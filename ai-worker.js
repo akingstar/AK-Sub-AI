@@ -641,7 +641,7 @@ async function localTranscribe(id, samples, lang) {
   const useGpu = typeof navigator !== 'undefined' && !!navigator.gpu;
   localAsr = await pipeline(
    'automatic-speech-recognition',
-   'onnx-community/whisper-base',
+   'onnx-community/whisper-tiny',
    useGpu ? { device: 'webgpu', dtype: 'fp32' } : { dtype: 'q8' }
   );
  }

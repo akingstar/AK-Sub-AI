@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#080b14">
+<title>AK Sub-AI — Professional Subtitle Studio</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080b14;color:#edf1ff;font-family:Inter,system-ui,Arial}
+header{height:68px;padding:0 5%;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #22283a;background:#0c1020;position:sticky;top:0;z-index:5}
+.logo{font-size:21px;font-weight:900}.logo span{color:#8b78ff}
+button,select,input,textarea{font:inherit}
+button{border:0;border-radius:9px;padding:11px 16px;background:#7560ff;color:white;font-weight:700;cursor:pointer}
+button:disabled{opacity:.45;cursor:not-allowed}
+.secondary{background:#20283b;color:#eee}
+main{max-width:1250px;margin:auto;padding:25px 16px}
+h1{font-size:29px;margin:8px 0}
+.muted{color:#9aa5bd;font-size:13px}
+.layout{display:grid;grid-template-columns:1.35fr .85fr;gap:18px;margin-top:22px}
+.panel{background:#111827;border:1px solid #252d41;border-radius:15px;padding:17px;min-width:0}
+.panel h3{margin:0 0 15px}
+.upload{border:2px dashed #414c68;border-radius:12px;padding:27px;text-align:center;margin-bottom:17px}
+.upload input{max-width:100%;margin-top:12px}
+video{width:100%;max-height:400px;background:#000;border-radius:10px}
+.preview{position:relative}
+.overlay{position:absolute;bottom:12%;left:5%;right:5%;text-align:center;pointer-events:none;font-weight:900;font-size:clamp(17px,3vw,30px);color:white;text-shadow:2px 3px 5px #000,-1px -1px 2px #000}
+.controls{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}
+select,input,textarea{background:#0b1220;color:white;border:1px solid #303b53;border-radius:8px;padding:10px;max-width:100%}
+select{width:100%}
+.field{margin:12px 0}.field label{display:block;color:#aeb9d1;font-size:12px;margin-bottom:6px}
+.progress{height:7px;background:#263149;border-radius:10px;overflow:hidden;margin:12px 0}
+#bar{height:100%;width:0;background:#8c78ff;transition:width .2s}
+#status{font-size:12px;color:#aeb9d1;white-space:pre-wrap}
+.segment{display:grid;grid-template-columns:75px 1fr;gap:8px;margin:9px 0}
+.segment input{width:100%;min-width:0}
+.segment textarea{width:100%;resize:vertical;min-height:55px}
+.timeline{max-height:440px;overflow:auto}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.badge{font-size:11px;color:#a99aff;background:#292348;padding:5px 9px;border-radius:20px}
+footer{text-align:center;padding:30px;color:#8994aa;font-size:12px}
+@media(max-width:800px){.layout{grid-template-columns:1fr}header{padding:0 15px}main{padding:18px 12px}}
+</style>
+</head>
+<body>
+<header>
+ <div class="logo">AK <span>Sub-AI</span></div>
+ <span class="badge">FREE AI STUDIO</span>
+</header>
+<main>
+ <div class="muted">AI VIDEO SUBTITLE EDITOR</div>
+ <h1>Create subtitles. Your style.</h1>
+ <p class="muted">Upload a video, generate captions, edit every line and export.</p>
+
+ <div class="layout">
+  <section class="panel">
+   <h3>Video workspace</h3>
+   <div class="upload">
+    <div style="font-size:30px">☁️</div>
+    <b>Upload your video or audio</b>
+    <div class="muted">MP4 · MOV · WEBM · MP3 · WAV · M4A</div>
+    <input id="file" type="file" accept="video/*,audio/*">
+   </div>
+   <div class="preview">
+    <video id="video" controls playsinline></video>
+    <div id="overlay" class="overlay"></div>
+   </div>
+   <div class="controls">
+    <button id="generate">✦ Generate subtitles</button>
+    <button class="secondary" id="srt">Download SRT</button>
+   </div>
+   <div class="progress"><div id="bar"></div></div>
+   <div id="status">Upload a file to get started.</div>
+  </section>
+
+  <section class="panel">
+   <h3>AI settings</h3>
+   <div class="field">
+    <label>Transcription language</label>
+    <select id="language">
+     <option value="auto">Auto detect</option>
+     <option value="hindi">Hindi</option>
+     <option value="english">English</option>
+     <option value="spanish">Spanish</option>
+     <option value="french">French</option>
+     <option value="arabic">Arabic</option>
+     <option value="german">German</option>
+     <option value="japanese">Japanese</option>
+     <option value="chinese">Chinese</option>
+     <option value="portuguese">Portuguese</option>
+     <option value="russian">Russian</option>
+    </select>
+   </div>
+   <div class="field">
+    <label>Subtitle output</label>
+    <select id="output">
+     <option value="hindi">Translate to Hindi</option>
+     <option value="original">Original language</option>
+    </select>
+   </div>
+   <div class="field">
+    <label>Subtitle style</label>
+    <select id="style">
+     <option value="classic">Professional YouTube</option>
+     <option value="reels">Reels / Shorts bold</option>
+     <option value="karaoke">Karaoke highlight</option>
+    </select>
+   </div>
+   <div class="field">
+    <label>Font size</label>
+    <input id="size" type="range" min="16" max="48" value="28">
+   </div>
+   <div class="field">
+    <label>Text color</label>
+    <input id="color" type="color" value="#ffffff">
+   </div>
+   <div class="field">
+    <label>Subtitle background</label>
+    <select id="background">
+     <option value="transparent">Transparent</option>
+     <option value="black">Black background</option>
+    </select>
+   </div>
+   <div class="actions">
+    <button class="secondary" id="translate">Translate to Hindi</button>
+    <button class="secondary" id="reset">Reset style</button>
+   </div>
+   <p class="muted">AI models download on first use. Processing runs in your browser.</p>
+  </section>
+ </div>
+
+ <section class="panel" style="margin-top:18px">
+  <h3>✎ Subtitle timeline <span class="badge" id="count">0 lines</span></h3>
+  <p class="muted">Edit the text and start/end timestamps. Changes appear in the video preview.</p>
+  <div class="timeline" id="timeline">
+   <p class="muted">Your generated subtitles will appear here.</p>
+  </div>
+  <div class="controls">
+   <button id="add" class="secondary">+ Add subtitle</button>
+   <button id="export">Export MP4 with subtitles</button>
+  </div>
+ </section>
+</main>
+<footer>AK Sub-AI · Browser-based AI subtitle studio · No watermark</footer>
+
+<script type="module">
+import { pipeline, env } from
+ 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2';
+
+const $=id=>document.getElementById(id);
+let file=null, videoURL=null, rows=[], asr=null, translator=null;
+let busy=false;
+
+let ffmpegEngine=null, ffmpegFetchFile=null, ffmpegLoadPromise=null;
+
+async function getFFmpeg(){
+ if(ffmpegEngine)return ffmpegEngine;
+ if(ffmpegLoadPromise)return ffmpegLoadPromise;
+
+ ffmpegLoadPromise=(async()=>{
+  const {FFmpeg}=await import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js');
+  const {fetchFile,toBlobURL}=await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js');
+  const engine=new FFmpeg();
+  engine.on('log',({message})=>{if(message)status(message)});
+  status('Loading browser media engine...');
+  await engine.load({
+   classWorkerURL:new URL('./vendor/ffmpeg/worker.js',document.baseURI).href,
+   coreURL:await toBlobURL('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.js','text/javascript'),
+   wasmURL:await toBlobURL('https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.wasm','application/wasm')
+  });
+  ffmpegFetchFile=fetchFile;
+  ffmpegEngine=engine;
+  return engine;
+ })();
+
+ try{return await ffmpegLoadPromise}
+ finally{ffmpegLoadPromise=null}
+}
+const sourceCodes={
+ english:'eng_Latn',spanish:'spa_Latn',french:'fra_Latn',
+ hindi:'hin_Deva',arabic:'arb_Arab',german:'deu_Latn',
+ japanese:'jpn_Jpan',chinese:'zho_Hans',
+ portuguese:'por_Latn',russian:'rus_Cyrl'
+};
+
+function status(t){$('status').textContent=t}
+function progress(n){$('bar').style.width=n+'%'}
+
+$('file').onchange=e=>{
+ file=e.target.files[0];
+ if(!file)return;
+ if(videoURL)URL.revokeObjectURL(videoURL);
+ videoURL=URL.createObjectURL(file);
+ $('video').src=videoURL;
+ rows=[];
+ render();
+ status('File ready: '+file.name);
+ progress(0);
+};
+
+function time(s){
+ s=Math.max(0,Number(s)||0);
+ return new Date(s*1000).toISOString().slice(11,19)+
+ '.'+String(Math.floor(s*1000)%1000).padStart(3,'0');
+}
+function parse(s){
+ const p=s.split(':').map(Number);
+ if(p.length!==3||p.some(Number.isNaN))return 0;
+ return p[0]*3600+p[1]*60+p[2];
+}
+function srtTime(s){
+ return time(s).replace('.',',');
+}
+function render(){
+ $('count').textContent=rows.length+' lines';
+ $('timeline').innerHTML='';
+ rows.forEach((r,i)=>{
+  const div=document.createElement('div');
+  div.className='segment';
+  const times=document.createElement('div');
+  const start=document.createElement('input');
+  start.value=time(r.start);
+  start.title='Start time';
+  const end=document.createElement('input');
+  end.value=time(r.end);
+  end.title='End time';
+  start.onchange=()=>{r.start=parse(start.value);updatePreview()};
+  end.onchange=()=>{r.end=parse(end.value);updatePreview()};
+  times.append(start,end);
+  const right=document.createElement('div');
+  const ta=document.createElement('textarea');
+  ta.value=r.text;
+  ta.oninput=()=>{r.text=ta.value;updatePreview()};
+  const del=document.createElement('button');
+  del.className='secondary';
+  del.textContent='Delete';
+  del.style.marginTop='5px';
+  del.onclick=()=>{rows.splice(i,1);render()};
+  right.append(ta,del);
+  div.append(times,right);
+  $('timeline').append(div);
+ });
+ updatePreview();
+}
+function updatePreview(){
+ const t=$('video').currentTime;
+ const r=rows.find(x=>t>=x.start&&t<=x.end);
+ $('overlay').textContent=r?r.text:'';
+}
+$('video').ontimeupdate=updatePreview;
+
+function style(){
+ const o=$('overlay');
+ o.style.fontSize=$('size').value+'px';
+ o.style.color=$('color').value;
+ o.style.background=$('background').value==='black'?'#000b':'transparent';
+ o.style.padding='7px';
+ o.style.borderRadius='5px';
+ o.style.fontWeight=$('style').value==='classic'?'700':'900';
+}
+['size','color','background','style'].forEach(id=>$(id).oninput=style);
+
+
+async function getAudio(){
+ let audioFile=file;
+
+ if(file.type.startsWith('video/')){
+  status('Extracting audio track from video...');
+  const ff=await getFFmpeg();
+  const ext=(file.name.split('.').pop()||'mp4').replace(/[^a-z0-9]/gi,'')||'mp4';
+  await ff.writeFile('ak-source.'+ext,await ffmpegFetchFile(file));
+  await ff.exec([
+   '-i','ak-source.'+ext,
+   '-vn','-ac','1','-ar','16000',
+   '-c:a','pcm_s16le','ak-audio.wav'
+  ]);
+  const wav=await ff.readFile('ak-audio.wav');
+  audioFile=new Blob([wav],{type:'audio/wav'});
+ }
+
+ status('Converting audio to 16 kHz mono...');
+ const ctx=new AudioContext();
+ try{
+  const decoded=await ctx.decodeAudioData(await audioFile.arrayBuffer());
+  const target=16000;
+  const length=Math.max(1,Math.ceil(decoded.duration*target));
+  const offline=new OfflineAudioContext(1,length,target);
+  const src=offline.createBufferSource();
+  src.buffer=decoded;
+  src.connect(offline.destination);
+  src.start(0);
+  const rendered=await offline.startRendering();
+  return rendered.getChannelData(0).slice();
+ }finally{
+  await ctx.close();
+ }
+}
+
+
+
+// Detect languages that can be identified reliably from their writing system.
+async function detectSourceLanguage(){
+ const sample=rows.slice(0,30)
+  .map(r=>r.sourceText??r.text)
+  .join(' ')
+  .trim();
+
+ if(!sample)throw new Error('No transcript available for language detection.');
+
+ if(/[\u0900-\u097f]/.test(sample))return 'hindi';
+ if(/[\u0600-\u06ff]/.test(sample))return 'arabic';
+ if(/[\u3040-\u30ff]/.test(sample))return 'japanese';
+ if(/[\u4e00-\u9fff]/.test(sample))return 'chinese';
+ if(/[\u0400-\u04ff]/.test(sample))return 'russian';
+
+ return 'english';
+}
+
+async function translateRowsToHindi(){
+ if(!rows.length)throw new Error('Generate subtitles first.');
+
+ const selected=$('language').value;
+ const source=selected==='auto'?await detectSourceLanguage():selected;
+
+ if(source==='hindi'){
+  status('Hindi detected. Translation is not needed.');
+  return;
+ }
+
+ const srcCode=sourceCodes[source];
+ if(!srcCode)throw new Error('Source language could not be identified. Select the original language manually.');
+
+ const originals=rows.map(r=>({
+  ...r,
+  sourceText:r.sourceText??r.text
+ }));
+
+ status('Loading Hindi translation AI model. First download may take time...');
+ if(!translator){
+  translator=await pipeline(
+   'translation',
+   'Xenova/nllb-200-distilled-600M',
+   {dtype:'q8'}
+  );
+ }
+
+ const translated=new Array(originals.length).fill('');
+ const batchSize=4;
+
+ for(let start=0;start<originals.length;start+=batchSize){
+  const inputs=[];
+  const indexes=[];
+  const end=Math.min(start+batchSize,originals.length);
+
+  for(let i=start;i<end;i++){
+   const input=String(originals[i].sourceText||'').trim();
+   if(input){
+    inputs.push(input);
+    indexes.push(i);
+   }
+  }
+
+  if(!inputs.length)continue;
+
+  status('Hindi translation: '+end+' / '+originals.length);
+
+  const results=await translator(inputs,{
+   src_lang:srcCode,
+   tgt_lang:'hin_Deva'
+  });
+
+  if(!Array.isArray(results)||results.length!==inputs.length){
+   throw new Error('Batch translation failed. Original subtitles preserved.');
+  }
+
+  for(let j=0;j<results.length;j++){
+   const output=String(results[j]?.translation_text||'').trim();
+   if(!output){
+    throw new Error('Empty translation at subtitle '+(indexes[j]+1)+'.');
+   }
+   translated[indexes[j]]=output;
+  }
+
+  progress(Math.round(end/originals.length*100));
+ }
+
+ // Commit only after every subtitle has translated successfully.
+ rows=originals.map((r,i)=>({
+  ...r,
+  text:translated[i],
+  sourceText:r.sourceText
+ }));
+
+ render();
+ status('Hindi translation complete! '+rows.length+' subtitle segments translated.');
+}
+
+$('generate').onclick=async()=>{
+ if(!file||busy)return alert('Please upload a video or audio file first.');
+
+ busy=true;
+ $('generate').disabled=true;
+ $('translate').disabled=true;
+
+ try{
+  status('Loading Whisper AI model. First download can be large...');
+
+  if(!asr){
+   asr=await pipeline(
+    'automatic-speech-recognition',
+    'onnx-community/whisper-tiny',
+    {dtype:'q8'}
+   );
+  }
+
+  status('Reading audio...');
+  const audio=await getAudio();
+
+  status('AI is generating subtitles. Please wait...');
+  const lang=$('language').value;
+
+  const whisperOptions={
+   task:'transcribe',
+   chunk_length_s:30,
+   stride_length_s:5,
+   return_timestamps:true
+  };
+
+  if(lang!=='auto')whisperOptions.language=lang;
+
+  const result=await asr(audio,whisperOptions);
+  const chunks=result.chunks||[];
+
+  rows=chunks.map(c=>({
+   start:c.timestamp?.[0]??0,
+   end:c.timestamp?.[1]??(c.timestamp?.[0]??0)+3,
+   text:(c.text||'').trim()
+  })).filter(x=>x.text);
+
+  if(!rows.length&&result.text){
+   rows=[{
+    start:0,
+    end:Math.max(3,$('video').duration||3),
+    text:result.text.trim()
+   }];
+  }
+
+  if(!rows.length)throw new Error('No speech detected. Please try a clearer audio file.');
+
+  render();
+
+  if($('output').value==='hindi'){
+   await translateRowsToHindi();
+  }else{
+   progress(100);
+   status('Transcription complete! '+rows.length+' subtitle segments generated.');
+  }
+
+ }catch(e){
+  status('Error: '+e.message);
+  console.error(e);
+ }finally{
+  busy=false;
+  $('generate').disabled=false;
+  $('translate').disabled=false;
+ }
+};
+
+$('translate').onclick=async()=>{
+ if(!rows.length)return alert('Generate subtitles first.');
+ if(busy)return;
+
+ busy=true;
+ $('translate').disabled=true;
+ $('generate').disabled=true;
+
+ try{
+  await translateRowsToHindi();
+ }catch(e){
+  status('Translation error: '+e.message);
+  console.error(e);
+ }finally{
+  busy=false;
+  $('translate').disabled=false;
+  $('generate').disabled=false;
+ }
+};
+
+$('add').onclick=()=>{
+ const t=$('video').currentTime||0;
+ rows.push({start:t,end:t+3,text:'अपना सबटाइटल यहाँ लिखें'});
+ render();
+};
+$('reset').onclick=()=>{
+ $('size').value=28;$('color').value='#ffffff';
+ $('background').value='transparent';$('style').value='classic';style();
+};
+$('srt').onclick=()=>{
+ if(!rows.length)return alert('No subtitles to download.');
+ const content=rows.map((r,i)=>
+ `${i+1}\n${srtTime(r.start)} --> ${srtTime(r.end)}\n${r.text}\n`
+ ).join('\n');
+ download(new Blob([content],{type:'text/plain;charset=utf-8'}),'AK-Sub-AI.srt');
+};
+function download(blob,name){
+ const a=document.createElement('a');
+ a.href=URL.createObjectURL(blob);a.download=name;a.click();
+ setTimeout(()=>URL.revokeObjectURL(a.href),3000);
+}
+$('export').onclick=async()=>{
+ if(!file||!rows.length)return alert('Upload video and generate subtitles first.');
+ if(!file.type.startsWith('video/'))return alert('MP4 export requires a video file.');
+ if(busy)return;
+ busy=true;$('export').disabled=true;
+ try{
+  status('Preparing subtitle file...');
+  const srt=rows.map((r,i)=>
+   `${i+1}\n${srtTime(r.start)} --> ${srtTime(r.end)}\n${r.text}\n`
+  ).join('\n');
+  const ff=await getFFmpeg();
+  const ext=(file.name.split('.').pop()||'mp4').replace(/[^a-z0-9]/gi,'');
+  await ff.writeFile('input.'+ext,await ffmpegFetchFile(file));
+  await ff.writeFile('captions.srt',new TextEncoder().encode(srt));
+  status('Burning Hindi subtitles into video. This may take time...');
+  await ff.exec(['-i','input.'+ext,'-vf',"subtitles=captions.srt",'-c:v','libx264','-preset','ultrafast','-c:a','aac','-b:a','128k','output.mp4']);
+  const data=await ff.readFile('output.mp4');
+  download(new Blob([data.buffer],{type:'video/mp4'}),'AK-Sub-AI.mp4');
+  status('MP4 export complete!');
+ }catch(e){
+  status('MP4 export unavailable in this browser build: '+e.message+' Download SRT instead.');
+  console.error(e);
+ }finally{busy=false;$('export').disabled=false}
+};
+style();
+</script>
+</body>
+</html>

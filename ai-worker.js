@@ -636,12 +636,17 @@ async function translate(id,inputRows,selected){
 
 let localAsr = null;
 async function localTranscribe(id, samples, lang) {
+ const mem = (typeof navigator !== 'undefined' && navigator.deviceMemory) || 4;
+ const isMobile = typeof navigator !== 'undefined' && /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || '');
+ if (isMobile || mem < 8) {
+  throw Error('Cloud limit khatam. Is device par local Whisper safe nahi hai (phone restart ho sakta hai). Subah ~5:30 IST ke baad dobara try karo, ya laptop (Chrome) par use karo.');
+ }
  if (!localAsr) {
   progress(id, 'Cloud limit khatam, local Whisper load ho raha hai (pehli baar download)...');
   const useGpu = typeof navigator !== 'undefined' && !!navigator.gpu;
   localAsr = await pipeline(
    'automatic-speech-recognition',
-   useGpu ? 'onnx-community/whisper-large-v3-turbo' : 'onnx-community/whisper-small',
+   useGpu ? 'onnx-community/whisper-large-v3-turbo' : 'onnx-community/whisper-base',
    useGpu
     ? { device: 'webgpu', dtype: { encoder_model: 'fp16', decoder_model_merged: 'q4' } }
     : { dtype: 'q8' }

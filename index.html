@@ -486,8 +486,9 @@ $('export').onclick=async()=>{
   const ext=(file.name.split('.').pop()||'mp4').replace(/[^a-z0-9]/gi,'');
   await ff.writeFile('input.'+ext,await ffmpegFetchFile(file));
   await ff.writeFile('captions.srt',new TextEncoder().encode(srt));
-  status('Burning Hindi subtitles into video. This may take time...');
-  await ff.exec(['-i','input.'+ext,'-vf',"subtitles=captions.srt",'-c:v','libx264','-preset','ultrafast','-c:a','aac','-b:a','128k','output.mp4']);
+  await ff.writeFile('NotoSansDevanagari-Regular.ttf',await ffmpegFetchFile(new URL('./assets/fonts/NotoSansDevanagari-Regular.ttf',document.baseURI).href));
+  status('Burning subtitles with Noto Sans Devanagari. This may take time...');
+  await ff.exec(['-i','input.'+ext,'-vf',"subtitles=captions.srt:fontsdir=.:force_style='FontName=Noto Sans Devanagari'",'-c:v','libx264','-preset','ultrafast','-c:a','aac','-b:a','128k','output.mp4']);
   const data=await ff.readFile('output.mp4');
   download(new Blob([data.buffer],{type:'video/mp4'}),'AK-Sub-AI.mp4');
   status('MP4 export complete!');

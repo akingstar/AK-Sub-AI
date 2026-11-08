@@ -198,7 +198,12 @@ async function transcribe(id, buffer, language, turnstileToken) {
  });
  const authPayload = await authResponse.json().catch(() => ({}));
  if (!authResponse.ok || !authPayload.sessionToken) {
-  throw Error(authPayload.error || `Security verification failed (${authResponse.status}).`);
+  throw Error([
+  authPayload.error || `Security verification failed (${authResponse.status}).`,
+  Array.isArray(authPayload.codes) && authPayload.codes.length ? `codes=${authPayload.codes.join(",")}` : "",
+  authPayload.hostname ? `hostname=${authPayload.hostname}` : "",
+  authPayload.action ? `action=${authPayload.action}` : ""
+].filter(Boolean).join(" | "));
  }
  const sessionToken = authPayload.sessionToken;
 

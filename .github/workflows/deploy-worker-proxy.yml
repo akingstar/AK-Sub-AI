@@ -25,6 +25,16 @@ jobs:
         working-directory: worker-proxy
         run: npm install
 
+      - name: Configure Turnstile secret
+        working-directory: worker-proxy
+        run: |
+          test -n "$TURNSTILE_SECRET" || { echo "Missing TURNSTILE_SECRET GitHub secret"; exit 1; }
+          printf '%s' "$TURNSTILE_SECRET" | npx wrangler secret put TURNSTILE_SECRET
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TURNSTILE_SECRET: ${{ secrets.TURNSTILE_SECRET }}
+
       - name: Deploy Worker
         working-directory: worker-proxy
         run: npx wrangler deploy

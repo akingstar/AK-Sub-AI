@@ -104,7 +104,8 @@ footer{text-align:center;padding:30px;color:#8994aa;font-size:12px}
    <div class="field">
     <label>Subtitle output</label>
     <select id="output">
-     <option value="hindi">Translate to Hindi</option>
+     <option value="hindi">Hindi (Devanagari)</option>
+     <option value="roman_hindi">Roman Hindi (English letters)</option>
      <option value="original">Original language</option>
     </select>
    </div>
@@ -418,6 +419,79 @@ async function getAudio(){
 
 
 
+function romanizeHindiRun(run){
+ const consonants={
+  'क':'k','ख':'kh','ग':'g','घ':'gh','ङ':'ng',
+  'च':'ch','छ':'chh','ज':'j','झ':'jh','ञ':'ny',
+  'ट':'t','ठ':'th','ड':'d','ढ':'dh','ण':'n',
+  'त':'t','थ':'th','द':'d','ध':'dh','न':'n',
+  'प':'p','फ':'ph','ब':'b','भ':'bh','म':'m',
+  'य':'y','र':'r','ल':'l','व':'v','श':'sh',
+  'ष':'sh','स':'s','ह':'h'
+ };
+ const nukta={
+  'क':'q','ख':'kh','ग':'gh','ज':'z',
+  'ड':'r','ढ':'rh','फ':'f','य':'y','र':'r'
+ };
+ const vowels={
+  'अ':'a','आ':'a','इ':'i','ई':'i','उ':'u',
+  'ऊ':'u','ऋ':'ri','ए':'e','ऐ':'ai','ओ':'o',
+  'औ':'au','ऑ':'o'
+ };
+ const matras={
+  'ा':'a','ि':'i','ी':'i','ु':'u','ू':'u',
+  'ृ':'ri','े':'e','ै':'ai','ो':'o','ौ':'au'
+ };
+ let out='',lastInherent=false;
+
+ for(let i=0;i<run.length;i++){
+  let ch=run[i];
+
+  if(consonants[ch]){
+   let base=consonants[ch];
+   if(run[i+1]==='़'){
+    base=nukta[ch]||base;
+    i++;
+   }
+   out+=base;
+   lastInherent=false;
+
+   if(run[i+1]==='्'){
+    i++;
+   }else if(matras[run[i+1]]){
+    out+=matras[run[++i]];
+   }else{
+    out+='a';
+    lastInherent=true;
+   }
+  }else if(vowels[ch]){
+   out+=vowels[ch];
+   lastInherent=false;
+  }else if(ch==='ं'||ch==='ँ'){
+   out+='n';
+   lastInherent=false;
+  }else if(ch==='ः'){
+   out+='h';
+   lastInherent=false;
+  }else if(ch==='़'||ch==='्'||ch==='ं‍'){
+   lastInherent=false;
+  }else{
+   out+=ch;
+   lastInherent=false;
+  }
+ }
+
+ if(lastInherent&&out.endsWith('a'))out=out.slice(0,-1);
+ return out;
+}
+
+function romanizeHindiText(text){
+ return String(text||'')
+  .replace(/[\u0900-\u097F]+/g,romanizeHindiRun)
+  .replace(/(^|[.!?]\s+)([a-z])/g,
+   (_,prefix,letter)=>prefix+letter.toUpperCase());
+}
+
 async function translateRowsToHindi(){
  translationStage='background Hindi translation';
  if(!rows.length)throw new Error('Generate subtitles first.');
@@ -431,10 +505,22 @@ async function translateRowsToHindi(){
   throw new Error('Invalid translation response.');
 
  rows=result.rows;
+
+ let completionMessage=result.message||'Hindi subtitles ready.';
+ if($('output').value==='roman_hindi'){
+  rows=rows.map(r=>({
+   ...r,
+   text:romanizeHindiText(r.text)
+  }));
+  completionMessage=completionMessage
+   .replace(/^Hindi ready:/,'Roman Hindi ready:')
+   .replace('Hindi subtitles ready.','Roman Hindi subtitles ready.');
+ }
+
  render();
  progress(100);
  translationStage='complete';
- status(result.message||'Hindi subtitles ready.');
+ status(completionMessage);
 }
 
 
@@ -515,7 +601,7 @@ $('generate').onclick=async()=>{
   if(!rows.length)throw new Error('No speech detected.');
   render();
 
-  if($('output').value==='hindi'){
+  if($('output').value!=='original'){
    await translateRowsToHindi();
   }else{
    progress(100);

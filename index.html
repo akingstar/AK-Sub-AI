@@ -237,6 +237,7 @@ function workerRequest(type,payload={},transfer=[]){
 }
 
 let ffmpegEngine=null, ffmpegFetchFile=null, ffmpegLoadPromise=null;
+let ffmpegExporting=false;
 
 async function getFFmpeg(){
  if(ffmpegEngine)return ffmpegEngine;
@@ -246,7 +247,7 @@ async function getFFmpeg(){
   const {FFmpeg}=await import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js');
   const {fetchFile,toBlobURL}=await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/esm/index.js');
   const engine=new FFmpeg();
-  engine.on('log',({message})=>{if(message)status(message)});
+  engine.on('log',({message})=>{if(message&&!ffmpegExporting)status(message)});
   status('Loading browser media engine...');
   await engine.load({
    classWorkerURL:new URL('./vendor/ffmpeg/worker.js',document.baseURI).href,
@@ -853,19 +854,32 @@ $('export').onclick=async()=>{
   const bold=Number(preset.bold)?1:0;
   const italic=preset.italic?1:0;
   const forceStyle=`FontName=Noto Sans Devanagari,FontSize=${fontSize},PrimaryColour=${assColor},OutlineColour=&H00000000,BackColour=${backColour},BorderStyle=${boxed?3:1},Outline=${outline},Shadow=${shadow},Alignment=${alignment},MarginV=${marginV},Bold=${bold},Italic=${italic}`;
-  await ff.exec([
-   '-i','input.'+ext,
-   '-map','0:v:0','-map','0:a?',
-   '-vf',`subtitles=captions.srt:fontsdir=.:force_style='${forceStyle}'`,
-   '-c:v','libx264',
-   '-preset','medium',
-   '-crf','18',
-   '-pix_fmt','yuv420p',
-   '-c:a','aac',
-   '-b:a','192k',
-   '-movflags','+faststart',
-   'output.mp4'
-  ]);
+  const onExportProgress=({progress:ratio})=>{
+   const percent=Math.max(0,Math.min(99,Math.round((Number(ratio)||0)*100)));
+   progress(percent);
+   status(`Rendering video... ${percent}%`);
+  };
+  ffmpegExporting=true;
+  ff.on('progress',onExportProgress);
+  try{
+   const exitCode=await ff.exec([
+    '-i','input.'+ext,
+    '-map','0:v:0','-map','0:a?',
+    '-vf',`subtitles=captions.srt:fontsdir=.:force_style='${forceStyle}'`,
+    '-c:v','libx264',
+    '-preset','medium',
+    '-crf','18',
+    '-pix_fmt','yuv420p',
+    '-c:a','aac',
+    '-b:a','192k',
+    '-movflags','+faststart',
+    'output.mp4'
+   ]);
+   if(exitCode!==0)throw new Error('FFmpeg exit code: '+exitCode);
+  }finally{
+   ff.off('progress',onExportProgress);
+   ffmpegExporting=false;
+  }
   const data=await ff.readFile('output.mp4');
   download(new Blob([data.buffer],{type:'video/mp4'}),'AK-Sub-AI.mp4');
   status('MP4 export complete!');

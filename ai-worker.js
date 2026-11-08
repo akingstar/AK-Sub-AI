@@ -176,7 +176,7 @@ function wordsToRows(words, offset) {
  return rows;
 }
 
-async function transcribe(id, buffer, language, turnstileToken) {
+async function cloudTranscribe(id, buffer, language, turnstileToken) {
  const samples = new Float32Array(buffer);
  if (!samples.length) throw Error('Audio is empty.');
 
@@ -232,8 +232,11 @@ async function transcribe(id, buffer, language, turnstileToken) {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-   throw Error(payload.error ||
-    `Cloud transcription failed (${response.status}).`);
+   const msg = payload.error ||
+    `Cloud transcription failed (${response.status}).`;
+   const err = Error(msg);
+   err.quota = /4006|daily free allocation|neurons/i.test(msg);
+   throw err;
   }
 
   const transcriptionInfo = payload.transcription_info || {};
@@ -629,6 +632,51 @@ async function translate(id,inputRows,selected){
   rows:originals.map((r,i)=>({...r,text:translated[i]})),
   message:`Hindi ready: ${count} translated, ${hindiPreserved} Hindi preserved, ${uncertain} uncertain lines unchanged.`
  };
+}
+
+let localAsr = null;
+async function localTranscribe(id, samples, lang) {
+ if (!localAsr) {
+  progress(id, 'Cloud limit khatam, local Whisper load ho raha hai (pehli baar download)...');
+  const useGpu = typeof navigator !== 'undefined' && !!navigator.gpu;
+  localAsr = await pipeline(
+   'automatic-speech-recognition',
+   'onnx-community/whisper-base',
+   useGpu ? { device: 'webgpu', dtype: 'fp32' } : { dtype: 'q8' }
+  );
+ }
+ progress(id, 'Local Whisper: transcribe ho raha hai...');
+ const out = await localAsr(samples, {
+  chunk_length_s: 30,
+  stride_length_s: 5,
+  return_timestamps: true,
+  ...(lang ? { language: lang, task: 'transcribe' } : {})
+ });
+ const rows = (out.chunks || [])
+  .map(c => ({
+   start: Number(c.timestamp?.[0] ?? 0),
+   end: Number(c.timestamp?.[1] ?? (c.timestamp?.[0] ?? 0) + 2),
+   text: String(c.text || '').trim()
+  }))
+  .filter(r => r.text && r.end > r.start);
+ if (!rows.length) throw Error('No speech detected by local Whisper.');
+ return rows;
+}
+
+let cloudBlocked = false;
+async function transcribe(id, buffer, language, turnstileToken) {
+ const lang = language && language !== 'auto'
+  ? (ASR_LANGUAGE_CODES[language] || language)
+  : null;
+ if (!cloudBlocked) {
+  try {
+   return await cloudTranscribe(id, buffer, language, turnstileToken);
+  } catch (e) {
+   if (!e || !e.quota) throw e;
+   cloudBlocked = true;
+  }
+ }
+ return await localTranscribe(id, new Float32Array(buffer), lang);
 }
 
 self.onmessage=async({data})=>{

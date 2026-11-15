@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://akingstar.github.io/AK-Sub-AI/sitemap.xml

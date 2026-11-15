@@ -1,0 +1,18 @@
+{
+  "id": "/AK-Sub-AI/",
+  "name": "AK Sub-AI — AI Subtitle Studio",
+  "short_name": "AK Sub-AI",
+  "description": "Free AI subtitle studio: generate captions, edit every line, export SRT and render subtitles into video — all in your browser.",
+  "start_url": "/AK-Sub-AI/",
+  "scope": "/AK-Sub-AI/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#080b14",
+  "theme_color": "#080b14",
+  "categories": ["utilities", "productivity"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

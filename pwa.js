@@ -26,6 +26,17 @@
   addLink("apple-touch-icon", CONFIG.appleIcon);
   addLink("icon", CONFIG.linkIcon, { sizes: "192x192", type: "image/png" });
 
+  function addMeta(name, content) {
+    if (document.querySelector('meta[name="' + name + '"]')) return;
+    var meta = document.createElement("meta");
+    meta.name = name;
+    meta.content = content;
+    document.head.appendChild(meta);
+  }
+  addMeta("apple-mobile-web-app-capable", "yes");
+  addMeta("mobile-web-app-capable", "yes");
+  addMeta("apple-mobile-web-app-status-bar-style", "black-translucent");
+
   if (CONFIG.sw && "serviceWorker" in navigator) {
     window.addEventListener("load", function () {
       navigator.serviceWorker.register(CONFIG.base + "sw.js").catch(function () {});

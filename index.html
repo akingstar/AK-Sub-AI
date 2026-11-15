@@ -212,6 +212,10 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(139,120,2
    <p class="muted">Your generated subtitles will appear here.</p>
   </div>
   <div class="controls">
+   <select id="exportQuality" title="Export speed and quality" style="width:auto;flex:0 1 auto;padding:11px 12px;border-radius:9px">
+    <option value="fast" selected>Fast export (recommended)</option>
+    <option value="high">High quality (slower)</option>
+   </select>
    <button id="export">Export MP4 with subtitles</button>
   </div>
  </section>
@@ -966,17 +970,22 @@ $('export').onclick=async()=>{
  if(!file.type.startsWith('video/'))return alert('MP4 export requires a video file.');
  if(busy)return;
  busy=true;$('export').disabled=true;
+ const exportStartedAt=performance.now();
  try{
   status('Preparing subtitle file...');
   const srt=rows.map((r,i)=>
    `${i+1}\n${srtTime(r.start)} --> ${srtTime(r.end)}\n${r.text}\n`
   ).join('\n');
-  const ff=await getFFmpeg();
   const ext=(file.name.split('.').pop()||'mp4').replace(/[^a-z0-9]/gi,'');
+  const canCopyAudio=['mp4','m4v','mov'].includes(ext);
+  const fastMode=$('exportQuality').value!=='high';
+  const encoderPreset=fastMode?'superfast':'veryfast';
+  const encoderCrf=fastMode?'20':'18';
+  const ff=await getFFmpeg();
   await ff.writeFile('input.'+ext,await ffmpegFetchFile(file));
   await ff.writeFile('captions.srt',new TextEncoder().encode(srt));
   await ff.writeFile('NotoSansDevanagari-Regular.ttf',await ffmpegFetchFile(new URL('./assets/fonts/NotoSansDevanagari-Regular.ttf',document.baseURI).href));
-  status('Burning subtitles with Noto Sans Devanagari. This may take time...');
+  status(`Burning subtitles (${fastMode?'fast':'high quality'} mode). This may take time...`);
   const size=Math.max(16,Math.min(48,Number($('size').value)||28));
   const hex=$('color').value.replace('#','').toUpperCase();
   const assColor='&H00'+hex.slice(4,6)+hex.slice(2,4)+hex.slice(0,2);
@@ -1005,11 +1014,11 @@ $('export').onclick=async()=>{
     '-map','0:v:0','-map','0:a?',
     '-vf',`subtitles=captions.srt:fontsdir=.:force_style='${forceStyle}'`,
     '-c:v','libx264',
-    '-preset','veryfast',
-    '-crf','18',
+    '-preset',encoderPreset,
+    '-crf',encoderCrf,
     '-pix_fmt','yuv420p',
-    '-c:a','aac',
-    '-b:a','192k',
+    '-c:a',canCopyAudio?'copy':'aac',
+    ...(canCopyAudio?[]:['-b:a','192k']),
     '-movflags','+faststart',
     'output.mp4'
    ]);
@@ -1020,7 +1029,7 @@ $('export').onclick=async()=>{
   }
   const data=await ff.readFile('output.mp4');
   download(new Blob([data.buffer],{type:'video/mp4'}),'AK-Sub-AI.mp4');
-  status('MP4 export complete!');
+  status(`MP4 export complete in ${((performance.now()-exportStartedAt)/1000).toFixed(1)}s!`);
  }catch(e){
   status('MP4 export unavailable in this browser build: '+e.message+' Download SRT instead.');
   console.error(e);

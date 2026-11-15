@@ -742,8 +742,12 @@ async function convertRowsToRoman(languageKey,onProgress){
 
   chunk.forEach((rowIndex,position)=>{
    const original=String(rows[rowIndex].text||'');
+   const originalWords=original.trim().split(/\s+/).filter(Boolean).length;
    let text=converted?.[position];
-   if(!text||NEEDS_ROMAN.test(text))text=romanizeHindiText(original);
+   const convertedWords=text?text.trim().split(/\s+/).filter(Boolean).length:0;
+   if(!text||NEEDS_ROMAN.test(text)||Math.abs(convertedWords-originalWords)>Math.max(2,Math.ceil(originalWords*0.5))){
+    text=romanizeHindiText(original);
+   }
    rows[rowIndex]={...rows[rowIndex],text:sentenceCase(text)};
   });
  }

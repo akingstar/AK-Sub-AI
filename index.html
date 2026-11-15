@@ -89,7 +89,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(139,120,2
 </head>
 <body>
 <header>
- <div class="logo"><span class="ak-mark"><svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="akg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b78ff"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs><rect width="64" height="64" rx="16" fill="#0b0f1e"/><rect x="3" y="3" width="58" height="58" rx="14" fill="url(#akg)" opacity=".2"/><rect x="3.5" y="3.5" width="57" height="57" rx="13.5" fill="none" stroke="url(#akg)" stroke-opacity=".65"/><path d="M17 45 27 19h4l10 26" fill="none" stroke="#fff" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M21.5 36.5h15" stroke="#fff" stroke-width="4.4" stroke-linecap="round"/><path d="M44 19v26M56 19 45.5 32 56 45" fill="none" stroke="#fff" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>AK <span>Sub-AI</span></div>
+ <div class="logo"><span class="ak-mark"><svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="akg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8b78ff"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs><rect width="64" height="64" rx="16" fill="#0b0f1e"/><rect x="3" y="3" width="58" height="58" rx="14" fill="url(#akg)" opacity=".2"/><rect x="3.5" y="3.5" width="57" height="57" rx="13.5" fill="none" stroke="url(#akg)" stroke-opacity=".65"/><path d="M17 45 27 19h4l10 26" fill="none" stroke="#fff" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M21.5 36.5h15" stroke="#fff" stroke-width="4.4" stroke-linecap="round"/><path d="M44 19v26M56 19 45.5 32 56 45" fill="none" stroke="#fff" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>Sub-AI</span></div>
  <span class="badge">FREE AI STUDIO</span>
 </header>
 <main>
@@ -149,9 +149,10 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(139,120,2
    <div class="field">
     <label>Subtitle output</label>
     <select id="output">
+     <option value="roman_original" selected>Original language — Roman letters</option>
+     <option value="original">Original language (native script)</option>
      <option value="hindi">Hindi (Devanagari)</option>
-     <option value="roman_hindi">Roman Hindi (English letters)</option>
-     <option value="original">Original language</option>
+     <option value="roman_hindi">Translate to Hindi — Roman letters</option>
     </select>
    </div>
    <div class="field">
@@ -588,7 +589,7 @@ function romanizeHindiRun(run){
   'ड':'r','ढ':'rh','फ':'f','य':'y','र':'r'
  };
  const vowels={
-  'अ':'a','आ':'a','इ':'i','ई':'i','उ':'u',
+  'अ':'a','आ':'aa','इ':'i','ई':'i','उ':'u',
   'ऊ':'u','ऋ':'ri','ए':'e','ऐ':'ai','ओ':'o',
   'औ':'au','ऑ':'o'
  };
@@ -603,8 +604,10 @@ function romanizeHindiRun(run){
 
   if(consonants[ch]){
    let base=consonants[ch];
+   let hasNukta=false;
    if(run[i+1]==='़'){
     base=nukta[ch]||base;
+    hasNukta=true;
     i++;
    }
    out+=base;
@@ -613,7 +616,18 @@ function romanizeHindiRun(run){
    if(run[i+1]==='्'){
     i++;
    }else if(matras[run[i+1]]){
-    out+=matras[run[++i]];
+    const matra=run[++i];
+    if(matra==='ा'&&run[i+1]==='ँ'){
+     out+='aan';
+     i++;
+    }else if(matra==='े'&&run[i+1]==='ं'){
+     out+='ein';
+     i++;
+    }else{
+     out+=matras[matra];
+    }
+   }else if(hasNukta&&(ch==='ड'||ch==='ढ')){
+    lastInherent=false;
    }else{
     out+='a';
     lastInherent=true;
@@ -641,6 +655,7 @@ function romanizeHindiRun(run){
 
 function romanizeHindiText(text){
  return String(text||'')
+  .replace(/।/g,'.')
   .replace(/[\u0900-\u097F]+/g,romanizeHindiRun)
   .replace(/(^|[.!?]\s+)([a-z])/g,
    (_,prefix,letter)=>prefix+letter.toUpperCase());
@@ -661,7 +676,7 @@ async function translateRowsToHindi(){
  rows=result.rows;
 
  let completionMessage=result.message||'Hindi subtitles ready.';
- if($('output').value==='roman_hindi'){
+ if(['roman_hindi','roman_original'].includes($('output').value)){
   rows=rows.map(r=>({
    ...r,
    text:romanizeHindiText(r.text)
@@ -753,11 +768,18 @@ $('generate').onclick=async()=>{
   }));
 
   if(!rows.length)throw new Error('No speech detected.');
-  render();
 
-  if($('output').value!=='original'){
+  const outputMode=$('output').value;
+  if(outputMode==='roman_original'){
+   rows=rows.map(r=>({...r,text:romanizeHindiText(r.text)}));
+   render();
+   progress(100);
+   status('Transcription complete! '+rows.length+' segments generated in original language (Roman letters).');
+  }else if(outputMode!=='original'){
+   render();
    await translateRowsToHindi();
   }else{
+   render();
    progress(100);
    status('Transcription complete! '+rows.length+' subtitle segments generated.');
   }

@@ -123,8 +123,8 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(139,120,2
    <div class="field">
     <label>Transcription language</label>
     <select id="language">
-     <option value="auto">Auto detect</option>
-     <option value="hindi" selected>Hindi</option>
+     <option value="auto" selected>Auto detect (each video's own language)</option>
+     <option value="hindi">Hindi</option>
      <option value="english">English</option>
      <option value="spanish">Spanish</option>
      <option value="french">French</option>
@@ -154,6 +154,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(139,120,2
      <option value="hindi">Hindi (Devanagari)</option>
      <option value="roman_hindi">Translate to Hindi — Roman letters</option>
     </select>
+    <p class="muted" style="margin-top:8px;font-size:12px">Roman mode keeps your exact spoken words in each language — only the script changes, via AI transliteration. Nothing is translated.</p>
    </div>
    <div class="field">
     <label>Subtitle style</label>
@@ -661,6 +662,93 @@ function romanizeHindiText(text){
    (_,prefix,letter)=>prefix+letter.toUpperCase());
 }
 
+const ROMAN_ENDPOINTS=[
+ {url:'https://text.pollinations.ai/openai',model:'openai-fast'},
+ {url:'https://text.pollinations.ai/openai',model:'openai'}
+];
+const NEEDS_ROMAN=/[\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0900-\u097F\u0980-\u0DFF\u0E00-\u0E7F\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/;
+
+function sentenceCase(text){
+ return String(text||'').trim()
+  .replace(/(^|[.!?]\s+)([a-z])/g,(_,prefix,letter)=>prefix+letter.toUpperCase());
+}
+
+async function requestRomanChunk(lines,languageName){
+ const system='You are a professional subtitle transliterator. For every input line, keep the exact meaning, names, numbers and punctuation, but write the line in natural Latin-script (Roman) spelling used by native speakers in chats and subtitles. Hindi must become natural Hinglish, never IAST diacritics. Do not translate, do not add or remove words, never merge or split lines. Return ONLY a JSON array of strings with exactly '+lines.length+' items.';
+ const user='Language: '+languageName+'\nLines:\n'+lines.map((line,index)=>(index+1)+'. '+line).join('\n');
+
+ let lastError=null;
+ for(const endpoint of ROMAN_ENDPOINTS){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),30000);
+  try{
+   const response=await fetch(endpoint.url,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    signal:controller.signal,
+    body:JSON.stringify({
+     model:endpoint.model,
+     temperature:0,
+     messages:[{role:'system',content:system},{role:'user',content:user}]
+    })
+   });
+   if(!response.ok)throw new Error('HTTP '+response.status);
+   const payload=await response.json();
+   const content=payload?.choices?.[0]?.message?.content;
+   if(typeof content!=='string'||!content.trim())throw new Error('Empty transliteration response.');
+   const cleaned=content.replace(/^```(?:json)?/i,'').replace(/```$/,'').trim();
+   const start=cleaned.indexOf('[');
+   const end=cleaned.lastIndexOf(']');
+   if(start<0||end<=start)throw new Error('No JSON array in response.');
+   const parsed=JSON.parse(cleaned.slice(start,end+1));
+   if(!Array.isArray(parsed)||parsed.length!==lines.length)throw new Error('Line count mismatch.');
+   return parsed.map(value=>sentenceCase(String(value??'')));
+  }catch(error){
+   lastError=error;
+  }finally{
+   clearTimeout(timer);
+  }
+ }
+ throw lastError||new Error('Roman conversion failed.');
+}
+
+async function convertRowsToRoman(languageKey,onProgress){
+ const indexes=[];
+ rows.forEach((row,index)=>{
+  if(NEEDS_ROMAN.test(String(row.text||'')))indexes.push(index);
+ });
+ if(!indexes.length){
+  rows=rows.map(row=>({...row,text:sentenceCase(row.text)}));
+  return;
+ }
+
+ const languageName=languageKey&&languageKey!=='auto'
+  ?$('language').selectedOptions[0].textContent
+  :'the original spoken language detected from the text';
+
+ const chunkSize=30;
+ for(let offset=0;offset<indexes.length;offset+=chunkSize){
+  const chunk=indexes.slice(offset,offset+chunkSize);
+  const done=Math.min(offset+chunkSize,indexes.length);
+  onProgress?.('Converting to Roman script ('+done+'/'+indexes.length+' lines)...');
+  const lines=chunk.map(index=>String(rows[index].text||''));
+
+  let converted=null;
+  try{
+   converted=await requestRomanChunk(lines,languageName);
+  }catch(error){
+   console.warn('AI romanization failed, using local fallback',error);
+  }
+
+  chunk.forEach((rowIndex,position)=>{
+   const original=String(rows[rowIndex].text||'');
+   let text=converted?.[position];
+   if(!text||NEEDS_ROMAN.test(text))text=romanizeHindiText(original);
+   rows[rowIndex]={...rows[rowIndex],text:sentenceCase(text)};
+  });
+ }
+}
+
 async function translateRowsToHindi(){
  translationStage='background Hindi translation';
  if(!rows.length)throw new Error('Generate subtitles first.');
@@ -677,10 +765,7 @@ async function translateRowsToHindi(){
 
  let completionMessage=result.message||'Hindi subtitles ready.';
  if(['roman_hindi','roman_original'].includes($('output').value)){
-  rows=rows.map(r=>({
-   ...r,
-   text:romanizeHindiText(r.text)
-  }));
+  await convertRowsToRoman('hindi',message=>status(message));
   completionMessage=completionMessage
    .replace(/^Hindi ready:/,'Roman Hindi ready:')
    .replace('Hindi subtitles ready.','Roman Hindi subtitles ready.');
@@ -771,7 +856,7 @@ $('generate').onclick=async()=>{
 
   const outputMode=$('output').value;
   if(outputMode==='roman_original'){
-   rows=rows.map(r=>({...r,text:romanizeHindiText(r.text)}));
+   await convertRowsToRoman($('language').value,message=>status(message));
    render();
    progress(100);
    status('Transcription complete! '+rows.length+' segments generated in original language (Roman letters).');

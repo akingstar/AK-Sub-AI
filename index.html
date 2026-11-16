@@ -123,28 +123,33 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(139,120,2
    <div class="field">
     <label>Transcription language</label>
     <select id="language">
-     <option value="auto" selected>Auto detect (each video's own language)</option>
-     <option value="hindi">Hindi</option>
-     <option value="english">English</option>
-     <option value="spanish">Spanish</option>
-     <option value="french">French</option>
-     <option value="arabic">Arabic</option>
-     <option value="german">German</option>
-     <option value="japanese">Japanese</option>
-     <option value="chinese">Chinese</option>
-     <option value="portuguese">Portuguese</option>
-     <option value="russian">Russian</option>
-     <option value="italian">Italian</option>
-     <option value="dutch">Dutch</option>
-     <option value="polish">Polish</option>
-     <option value="swahili">Swahili</option>
-     <option value="thai">Thai</option>
-     <option value="turkish">Turkish</option>
-     <option value="urdu">Urdu</option>
-     <option value="vietnamese">Vietnamese</option>
-     <option value="bulgarian">Bulgarian</option>
-     <option value="greek">Greek</option>
+     <optgroup label="Most used">
+      <option value="auto" selected>Auto detect (recommended)</option>
+      <option value="hindi">Hindi / Hinglish</option>
+      <option value="english">English</option>
+      <option value="urdu">Urdu</option>
+      <option value="arabic">Arabic</option>
+      <option value="spanish">Spanish</option>
+     </optgroup>
+     <optgroup label="More languages">
+      <option value="french">French</option>
+      <option value="german">German</option>
+      <option value="portuguese">Portuguese</option>
+      <option value="russian">Russian</option>
+      <option value="italian">Italian</option>
+      <option value="dutch">Dutch</option>
+      <option value="polish">Polish</option>
+      <option value="turkish">Turkish</option>
+      <option value="swahili">Swahili</option>
+      <option value="thai">Thai</option>
+      <option value="vietnamese">Vietnamese</option>
+      <option value="japanese">Japanese</option>
+      <option value="chinese">Chinese</option>
+      <option value="bulgarian">Bulgarian</option>
+      <option value="greek">Greek</option>
+     </optgroup>
     </select>
+    <p class="muted" style="margin-top:8px;font-size:12px">Mixed Hindi-English video? Choose “Hindi / Hinglish” for the best accuracy.</p>
    </div>
    <div class="field">
     <label>Subtitle output</label>
@@ -154,7 +159,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(139,120,2
      <option value="hindi">Hindi (Devanagari)</option>
      <option value="roman_hindi">Translate to Hindi — Roman letters</option>
     </select>
-    <p class="muted" style="margin-top:8px;font-size:12px">Roman mode keeps your exact spoken words in each language — only the script changes, via AI transliteration. Nothing is translated.</p>
+    <p class="muted" style="margin-top:8px;font-size:12px">Roman mode changes the script, not the language. AI can make mistakes: compare with the original and listen before exporting. Failed conversions keep the original text.</p>
    </div>
    <div class="field">
     <label>Subtitle style</label>
@@ -195,12 +200,13 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(139,120,2
  </div>
 
  <section class="panel" style="margin-top:18px">
-  <h3>✎ Subtitle timeline <span class="badge" id="count">0 lines</span></h3>
-  <p class="muted">Edit the text and start/end timestamps. Changes appear in the video preview.</p>
+  <h3>✎ Simple editor <span class="badge" id="count">0 lines</span></h3>
+  <p class="muted">Tap any line to fix its text or timing. Changes update instantly.</p>
   <div class="editor-toolbar">
    <input id="subtitleSearch" type="search" placeholder="Search subtitle text...">
    <button class="secondary" id="undo" type="button">↶ Undo</button>
    <button class="secondary" id="redo" type="button">↷ Redo</button>
+   <button class="secondary" id="autoClean" type="button">Check timing</button>
   </div>
   <div class="editor-toolbar">
    <button id="add" class="secondary" type="button">+ Add Text</button>
@@ -224,6 +230,8 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(139,120,2
 
 <script type="module">
 // AI inference moved to ai-worker.js
+import { refineRows } from './subtitle-utils.js';
+import { loadSubtitleFonts, buildAss } from './subtitle-fonts.js';
 
 const $=id=>document.getElementById(id);
 let file=null, videoURL=null, rows=[];
@@ -232,9 +240,10 @@ let selectedRowIndex=-1;
 let activeTemplate="classic";
 let historyStack=[],redoStack=[];
 let translationStage='general processing';
+let segmentStopAt=null;
 
 const aiWorker=new Worker(
- new URL('./ai-worker.js?v=8',import.meta.url),
+ new URL('./ai-worker.js?v=9',import.meta.url),
  {type:'module'}
 );
 let workerSequence=0;
@@ -315,6 +324,10 @@ const detectedLanguages={
 };
 
 function status(t){$('status').textContent=t}
+function setBusy(value){
+ busy=value;
+ document.querySelectorAll('main button,main input,main select,main textarea').forEach(element=>{element.disabled=value;});
+}
 function errorDetails(e){
  try{
   if(e instanceof Error)return e.stack||e.message||String(e);
@@ -333,7 +346,8 @@ $('file').onchange=e=>{
  if(videoURL)URL.revokeObjectURL(videoURL);
  videoURL=URL.createObjectURL(file);
  $('video').src=videoURL;
- rows=[];
+ rows=[];historyStack=[];redoStack=[];selectedRowIndex=-1;segmentStopAt=null;
+ $('subtitleSearch').value='';
  render();
  status('File ready: '+file.name);
  progress(0);
@@ -399,14 +413,33 @@ function render(){
    }
   };
 
+  const play=document.createElement('button');
+  play.className='secondary';play.textContent='▶ Play';play.title='Play this subtitle line';play.type='button';
+  play.onclick=e=>{e.stopPropagation();playRow(r);};
+
   const del=document.createElement('button');
   del.className='secondary';del.textContent='Delete';del.type='button';
-  del.style.marginTop='5px';
   del.onclick=e=>{
    e.stopPropagation();saveHistory();rows.splice(i,1);
    selectedRowIndex=Math.min(i,rows.length-1);render();
   };
-  right.append(ta,del);div.append(times,right);timeline.append(div);
+  const actions=document.createElement('div');
+  actions.style.cssText='display:flex;gap:6px;margin-top:6px;flex-wrap:wrap';
+  actions.append(play,del);
+  right.append(ta,actions);
+  if(r.originalText&&r.originalText!==r.text){
+   const source=document.createElement('details');
+   const label=document.createElement('summary');label.textContent='Original transcript';
+   const original=document.createElement('p');original.textContent=r.originalText;original.className='muted';
+   source.append(label,original);right.append(source);
+  }
+  const reasons=[...(r.reviewReasons||[])];
+  if(r.romanReview)reasons.push('Roman conversion needs review; original text was kept.');
+  if(reasons.length){
+   const note=document.createElement('p');note.className='muted';note.textContent=reasons.join(' ');
+   right.append(note);
+  }
+  div.append(times,right);timeline.append(div);
  });
  updatePreview();
  if(selectedRowIndex>=0&&selectedRowIndex<rows.length){
@@ -414,13 +447,26 @@ function render(){
   const visibleIndex=rows.slice(0,selectedRowIndex+1).filter(r=>!query||String(r.text).toLowerCase().includes(query)).length-1;
   if(selected[visibleIndex])selected[visibleIndex].classList.add('selected');
  }
+ if(busy)setBusy(true);
 }
 function updatePreview(){
  const t=$('video').currentTime;
- const r=rows.find(x=>t>=x.start&&t<=x.end);
- $('overlay').textContent=r?r.text:'';
+ $('overlay').textContent=rows.filter(row=>t>=row.start&&t<row.end).map(row=>row.text).join('\n');
 }
 $('video').ontimeupdate=updatePreview;
+$('video').addEventListener('timeupdate',()=>{
+ const v=$('video');
+ if(segmentStopAt!==null&&v.currentTime>=segmentStopAt-0.02){
+  v.pause();segmentStopAt=null;
+ }
+});
+function playRow(row){
+ const v=$('video');
+ if(!v.src)return;
+ segmentStopAt=row.end;
+ try{v.currentTime=Math.max(0,row.start-0.02);}catch(e){}
+ v.play().catch(()=>{});
+}
 
 
 const vipTemplates=[
@@ -542,21 +588,21 @@ async function getAudio(){
   status('Extracting audio track from video...');
   const ff=await getFFmpeg();
   const ext=(file.name.split('.').pop()||'mp4').replace(/[^a-z0-9]/gi,'')||'mp4';
-  await ff.writeFile('ak-source.'+ext,await ffmpegFetchFile(file));
-  const ffmpegExitCode=await ff.exec([
-   '-y','-i','ak-source.'+ext,
-   '-vn','-ac','1','-ar','16000',
-   '-c:a','pcm_s16le','ak-audio.wav'
-  ]);
-  if(ffmpegExitCode!==0){
-   throw new Error('Audio extraction failed. FFmpeg exit code: '+ffmpegExitCode);
+  try{
+   await ff.writeFile('ak-source.'+ext,await ffmpegFetchFile(file));
+   const ffmpegExitCode=await ff.exec([
+    '-y','-i','ak-source.'+ext,
+    '-vn','-ac','1','-ar','16000',
+    '-c:a','pcm_s16le','ak-audio.wav'
+   ]);
+   if(ffmpegExitCode!==0)throw new Error('Audio extraction failed. FFmpeg exit code: '+ffmpegExitCode);
+   const audio=wavToFloat32(await ff.readFile('ak-audio.wav'));
+   if(!audio.length)throw new Error('Extracted audio is empty.');
+   status('Audio extracted: '+Math.floor(audio.length/16000)+' seconds.');
+   return audio;
+  }finally{
+   for(const name of ['ak-source.'+ext,'ak-audio.wav']){try{await ff.deleteFile(name);}catch{}}
   }
-  const wav=await ff.readFile('ak-audio.wav');
-  status('Preparing extracted audio for AI...');
-  const audio=wavToFloat32(wav);
-  if(!audio.length)throw new Error('Extracted audio is empty.');
-  status('Audio extracted: '+Math.floor(audio.length/16000)+' seconds.');
-  return audio;
  }
 
  status('Converting audio to 16 kHz mono...');
@@ -579,103 +625,11 @@ async function getAudio(){
 
 
 
-function romanizeHindiRun(run){
- const consonants={
-  'क':'k','ख':'kh','ग':'g','घ':'gh','ङ':'ng',
-  'च':'ch','छ':'chh','ज':'j','झ':'jh','ञ':'ny',
-  'ट':'t','ठ':'th','ड':'d','ढ':'dh','ण':'n',
-  'त':'t','थ':'th','द':'d','ध':'dh','न':'n',
-  'प':'p','फ':'ph','ब':'b','भ':'bh','म':'m',
-  'य':'y','र':'r','ल':'l','व':'v','श':'sh',
-  'ष':'sh','स':'s','ह':'h'
- };
- const nukta={
-  'क':'q','ख':'kh','ग':'gh','ज':'z',
-  'ड':'r','ढ':'rh','फ':'f','य':'y','र':'r'
- };
- const vowels={
-  'अ':'a','आ':'aa','इ':'i','ई':'i','उ':'u',
-  'ऊ':'u','ऋ':'ri','ए':'e','ऐ':'ai','ओ':'o',
-  'औ':'au','ऑ':'o'
- };
- const matras={
-  'ा':'a','ि':'i','ी':'i','ु':'u','ू':'u',
-  'ृ':'ri','े':'e','ै':'ai','ो':'o','ौ':'au'
- };
- let out='',lastInherent=false;
-
- for(let i=0;i<run.length;i++){
-  let ch=run[i];
-
-  if(consonants[ch]){
-   let base=consonants[ch];
-   let hasNukta=false;
-   if(run[i+1]==='़'){
-    base=nukta[ch]||base;
-    hasNukta=true;
-    i++;
-   }
-   out+=base;
-   lastInherent=false;
-
-   if(run[i+1]==='्'){
-    i++;
-   }else if(matras[run[i+1]]){
-    const matra=run[++i];
-    if(matra==='ा'&&run[i+1]==='ँ'){
-     out+='aan';
-     i++;
-    }else if(matra==='े'&&run[i+1]==='ं'){
-     out+='ein';
-     i++;
-    }else{
-     out+=matras[matra];
-    }
-   }else if(hasNukta&&(ch==='ड'||ch==='ढ')){
-    lastInherent=false;
-   }else{
-    out+='a';
-    lastInherent=true;
-   }
-  }else if(vowels[ch]){
-   out+=vowels[ch];
-   lastInherent=false;
-  }else if(ch==='ं'||ch==='ँ'){
-   out+='n';
-   lastInherent=false;
-  }else if(ch==='ः'){
-   out+='h';
-   lastInherent=false;
-  }else if(ch==='़'||ch==='्'||ch==='ं‍'){
-   lastInherent=false;
-  }else{
-   out+=ch;
-   lastInherent=false;
-  }
- }
-
- if(lastInherent&&out.endsWith('a'))out=out.slice(0,-1);
- return out;
-}
-
-function romanizeHindiText(text){
- return String(text||'')
-  .replace(/।/g,'.')
-  .replace(/[\u0900-\u097F]+/g,romanizeHindiRun)
-  .replace(/(^|[.!?]\s+)([a-z])/g,
-   (_,prefix,letter)=>prefix+letter.toUpperCase());
-}
-
 const ROMAN_ENDPOINTS=[
  {url:'https://text.pollinations.ai/openai',model:'openai-fast'},
  {url:'https://text.pollinations.ai/openai',model:'openai'}
 ];
 const NEEDS_ROMAN=/[\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0900-\u097F\u0980-\u0DFF\u0E00-\u0E7F\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/;
-
-function sentenceCase(text){
- return String(text||'').trim()
-  .replace(/(^|[.!?]\s+)([a-z])/g,(_,prefix,letter)=>prefix+letter.toUpperCase());
-}
 
 async function requestRomanChunk(lines,languageName){
  const system='You are a professional subtitle transliterator. For every input line, keep the exact meaning, names, numbers and punctuation, but write the line in natural Latin-script (Roman) spelling used by native speakers in chats and subtitles. Hindi must become natural Hinglish, never IAST diacritics. Do not translate, do not add or remove words, never merge or split lines. Return ONLY a JSON array of strings with exactly '+lines.length+' items.';
@@ -705,8 +659,8 @@ async function requestRomanChunk(lines,languageName){
    const end=cleaned.lastIndexOf(']');
    if(start<0||end<=start)throw new Error('No JSON array in response.');
    const parsed=JSON.parse(cleaned.slice(start,end+1));
-   if(!Array.isArray(parsed)||parsed.length!==lines.length)throw new Error('Line count mismatch.');
-   return parsed.map(value=>sentenceCase(String(value??'')));
+   if(!Array.isArray(parsed)||parsed.length!==lines.length||parsed.some(value=>typeof value!=='string'||!value.trim()))throw new Error('Invalid Roman subtitle response.');
+   return parsed.map(value=>value.trim());
   }catch(error){
    lastError=error;
   }finally{
@@ -721,10 +675,7 @@ async function convertRowsToRoman(languageKey,onProgress){
  rows.forEach((row,index)=>{
   if(NEEDS_ROMAN.test(String(row.text||'')))indexes.push(index);
  });
- if(!indexes.length){
-  rows=rows.map(row=>({...row,text:sentenceCase(row.text)}));
-  return;
- }
+ if(!indexes.length)return;
 
  const languageName=languageKey&&languageKey!=='auto'
   ?$('language').selectedOptions[0].textContent
@@ -741,7 +692,7 @@ async function convertRowsToRoman(languageKey,onProgress){
   try{
    converted=await requestRomanChunk(lines,languageName);
   }catch(error){
-   console.warn('AI romanization failed, using local fallback',error);
+   console.warn('Roman conversion unavailable; keeping original captions.',error);
   }
 
   chunk.forEach((rowIndex,position)=>{
@@ -749,10 +700,11 @@ async function convertRowsToRoman(languageKey,onProgress){
    const originalWords=original.trim().split(/\s+/).filter(Boolean).length;
    let text=converted?.[position];
    const convertedWords=text?text.trim().split(/\s+/).filter(Boolean).length:0;
-   if(!text||NEEDS_ROMAN.test(text)||Math.abs(convertedWords-originalWords)>Math.max(2,Math.ceil(originalWords*0.5))){
-    text=romanizeHindiText(original);
-   }
-   rows[rowIndex]={...rows[rowIndex],text:sentenceCase(text)};
+   const numbers=value=>JSON.stringify(String(value).match(/\p{N}+/gu)||[]);
+   const romanReview=!text||NEEDS_ROMAN.test(text)||numbers(text)!==numbers(original)||
+    Math.abs(convertedWords-originalWords)>Math.max(2,Math.ceil(originalWords*0.5));
+   rows[rowIndex]={...rows[rowIndex],originalText:rows[rowIndex].originalText??original,
+    text:romanReview?original:text,romanReview};
   });
  }
 }
@@ -808,17 +760,20 @@ async function getTurnstileToken(){
   throw new Error('Configure the Cloudflare Turnstile site key first.');
  await loadAkTurnstile();
  return new Promise((resolve,reject)=>{
-  let settled=false;
+  let settled=false,widgetId=null;
+  const box=document.createElement('div');
+  document.body.appendChild(box);
   const finish=(fn,value)=>{
    if(settled)return;
    settled=true;
+   clearTimeout(timer);
+   if(widgetId!==null)window.turnstile.remove(widgetId);
+   box.remove();
    fn(value);
   };
-  const box=document.createElement('div');
-  box.style.cssText='position:fixed;left:-10000px;top:-10000px;width:1px;height:1px;overflow:hidden;';
-  document.body.appendChild(box);
+  const timer=setTimeout(()=>finish(reject,new Error('Security check timed out. Please retry in a normal browser tab.')),45000);
   try{
-   const id=window.turnstile.render(box,{
+   widgetId=window.turnstile.render(box,{
     sitekey:TURNSTILE_SITE_KEY,
     size:'invisible',
     execution:'execute',
@@ -827,7 +782,7 @@ async function getTurnstileToken(){
     'error-callback':()=>finish(reject,new Error('Cloudflare security check failed.')),
     'expired-callback':()=>finish(reject,new Error('Security token expired. Please retry.'))
    });
-   window.turnstile.execute(id);
+   window.turnstile.execute(widgetId);
   }catch(error){finish(reject,error);}
  });
 }
@@ -835,9 +790,7 @@ async function getTurnstileToken(){
 $('generate').onclick=async()=>{
  if(!file||busy)return alert('Please upload a video or audio file first.');
 
- busy=true;
- $('generate').disabled=true;
- $('translate').disabled=true;
+ setBusy(true);
 
  try{
   status('Preparing audio...');
@@ -855,6 +808,7 @@ $('generate').onclick=async()=>{
 
   rows=result.map(r=>({
    ...r,
+   originalText:r.text,
    end:Number.isFinite(r.end)
     ?r.end
     :Math.max(3,$('video').duration||3)
@@ -862,12 +816,17 @@ $('generate').onclick=async()=>{
 
   if(!rows.length)throw new Error('No speech detected.');
 
+  const videoDuration=Number($('video').duration);
+  rows=refineRows(rows,Number.isFinite(videoDuration)&&videoDuration>0?{duration:videoDuration}:{});
+  if(!rows.length)throw new Error('No speech detected.');
+
   const outputMode=$('output').value;
   if(outputMode==='roman_original'){
    await convertRowsToRoman($('language').value,message=>status(message));
    render();
    progress(100);
-   status('Transcription complete! '+rows.length+' segments generated in original language (Roman letters).');
+   const reviewCount=rows.filter(row=>row.romanReview).length;
+   status('Draft ready: '+rows.length+' captions. '+(reviewCount?reviewCount+' Roman conversions need review; originals kept.':'Listen and review before exporting.'));
   }else if(outputMode!=='original'){
    render();
    await translateRowsToHindi();
@@ -881,9 +840,7 @@ $('generate').onclick=async()=>{
   status('Error ['+translationStage+']: '+errorDetails(e));
   console.error(e);
  }finally{
-  busy=false;
-  $('generate').disabled=false;
-  $('translate').disabled=false;
+  setBusy(false);
  }
 };
 
@@ -891,9 +848,7 @@ $('translate').onclick=async()=>{
  if(!rows.length)return alert('Generate subtitles first.');
  if(busy)return;
 
- busy=true;
- $('translate').disabled=true;
- $('generate').disabled=true;
+ setBusy(true);
 
  try{
   await translateRowsToHindi();
@@ -901,15 +856,15 @@ $('translate').onclick=async()=>{
   status('Translation error ['+translationStage+']: '+errorDetails(e));
   console.error(e);
  }finally{
-  busy=false;
-  $('translate').disabled=false;
-  $('generate').disabled=false;
+  setBusy(false);
  }
 };
 
 $('add').onclick=()=>{
  const t=$('video').currentTime||0;
- saveHistory();rows.push({start:t,end:t+3,text:'अपना subtitle यहाँ लिखें'});
+ const duration=$('video').duration;
+ if(Number.isFinite(duration)&&t>=duration)return alert('Move the playhead before the end of the video.');
+ saveHistory();rows.push({start:t,end:Number.isFinite(duration)?Math.min(t+3,duration):t+3,text:'Type subtitle here'});
  selectedRowIndex=rows.length-1;render();
 };
 $('duplicate').onclick=()=>{
@@ -948,6 +903,15 @@ $('redo').onclick=()=>{
  if(!redoStack.length)return;
  historyStack.push(JSON.stringify(rows));restoreRows(redoStack.pop());
 };
+$('autoClean').onclick=()=>{
+ if(!rows.length)return alert('Generate subtitles first.');
+ saveHistory();
+ const duration=Number($('video').duration);
+ rows=refineRows(rows,Number.isFinite(duration)&&duration>0?{duration}:{});
+ selectedRowIndex=Math.min(selectedRowIndex,rows.length-1);
+ render();
+ status(`Checked ${rows.length} lines. ${rows.filter(row=>row.reviewReasons.length).length} need timing review; wording was preserved.`);
+};
 $('subtitleSearch').oninput=render;
 $('reset').onclick=()=>{
  $('size').value=28;$('color').value='#ffffff';
@@ -969,22 +933,24 @@ $('export').onclick=async()=>{
  if(!file||!rows.length)return alert('Upload video and generate subtitles first.');
  if(!file.type.startsWith('video/'))return alert('MP4 export requires a video file.');
  if(busy)return;
- busy=true;$('export').disabled=true;
+ const invalid=rows.findIndex(row=>!String(row.text).trim()||!Number.isFinite(row.start)||!Number.isFinite(row.end)||
+  row.start<0||row.end<=row.start||(Number.isFinite($('video').duration)&&row.end>$('video').duration+0.02));
+ if(invalid>=0)return alert('Check the text and timing of subtitle line '+(invalid+1)+' before export.');
+ setBusy(true);
  const exportStartedAt=performance.now();
+ const temporaryFiles=[];
+ let exportEngine=null;
  try{
   status('Preparing subtitle file...');
-  const srt=rows.map((r,i)=>
-   `${i+1}\n${srtTime(r.start)} --> ${srtTime(r.end)}\n${r.text}\n`
-  ).join('\n');
   const ext=(file.name.split('.').pop()||'mp4').replace(/[^a-z0-9]/gi,'');
-  const canCopyAudio=['mp4','m4v','mov'].includes(ext);
   const fastMode=$('exportQuality').value!=='high';
   const encoderPreset=fastMode?'superfast':'veryfast';
   const encoderCrf=fastMode?'20':'18';
   const ff=await getFFmpeg();
+  exportEngine=ff;
+  const fonts=await loadSubtitleFonts(ff,rows.map(row=>row.text).join('\n'),status);
+  temporaryFiles.push('input.'+ext,'captions.ass','output.mp4');
   await ff.writeFile('input.'+ext,await ffmpegFetchFile(file));
-  await ff.writeFile('captions.srt',new TextEncoder().encode(srt));
-  await ff.writeFile('NotoSansDevanagari-Regular.ttf',await ffmpegFetchFile(new URL('./assets/fonts/NotoSansDevanagari-Regular.ttf',document.baseURI).href));
   status(`Burning subtitles (${fastMode?'fast':'high quality'} mode). This may take time...`);
   const size=Math.max(16,Math.min(48,Number($('size').value)||28));
   const hex=$('color').value.replace('#','').toUpperCase();
@@ -1000,40 +966,49 @@ $('export').onclick=async()=>{
   const marginV=Number(preset.marginV)||35;
   const bold=Number(preset.bold)?1:0;
   const italic=preset.italic?1:0;
-  const forceStyle=`FontName=Noto Sans Devanagari,FontSize=${fontSize},PrimaryColour=${assColor},OutlineColour=&H00000000,BackColour=${backColour},BorderStyle=${boxed?3:1},Outline=${outline},Shadow=${shadow},Alignment=${alignment},MarginV=${marginV},Bold=${bold},Italic=${italic}`;
+  const captions=buildAss(rows,fonts,{fontSize,color:assColor,backColor:backColour,boxed,outline,shadow,alignment,marginV,bold,italic});
+  await ff.writeFile('captions.ass',new TextEncoder().encode(captions));
   const onExportProgress=({progress:ratio})=>{
    const percent=Math.max(0,Math.min(99,Math.round((Number(ratio)||0)*100)));
    progress(percent);
    status(`Rendering video... ${percent}%`);
   };
+  let missingGlyph=false;
+  const onExportLog=({message})=>{if(/glyph.*not found|failed to find any fallback/i.test(message))missingGlyph=true;};
   ffmpegExporting=true;
   ff.on('progress',onExportProgress);
+  ff.on('log',onExportLog);
   try{
    const exitCode=await ff.exec([
-    '-i','input.'+ext,
+    '-y','-i','input.'+ext,
     '-map','0:v:0','-map','0:a?',
-    '-vf',`subtitles=captions.srt:fontsdir=.:force_style='${forceStyle}'`,
+    '-vf','ass=captions.ass:fontsdir=subtitle-fonts',
     '-c:v','libx264',
     '-preset',encoderPreset,
     '-crf',encoderCrf,
     '-pix_fmt','yuv420p',
-    '-c:a',canCopyAudio?'copy':'aac',
-    ...(canCopyAudio?[]:['-b:a','192k']),
+    '-c:a','aac','-b:a','192k',
     '-movflags','+faststart',
     'output.mp4'
    ]);
    if(exitCode!==0)throw new Error('FFmpeg exit code: '+exitCode);
+   if(missingGlyph)throw new Error('A subtitle font could not render every character. Download SRT and report the affected line.');
   }finally{
+   ff.off('log',onExportLog);
    ff.off('progress',onExportProgress);
    ffmpegExporting=false;
   }
   const data=await ff.readFile('output.mp4');
-  download(new Blob([data.buffer],{type:'video/mp4'}),'AK-Sub-AI.mp4');
+  download(new Blob([data],{type:'video/mp4'}),'AK-Sub-AI.mp4');
+  progress(100);
   status(`MP4 export complete in ${((performance.now()-exportStartedAt)/1000).toFixed(1)}s!`);
  }catch(e){
-  status('MP4 export unavailable in this browser build: '+e.message+' Download SRT instead.');
+  status('Export stopped: '+e.message+' Your editable captions are still available.');
   console.error(e);
- }finally{busy=false;$('export').disabled=false}
+ }finally{
+  for(const name of temporaryFiles){try{await exportEngine.deleteFile(name);}catch{}}
+  setBusy(false);
+ }
 };
 renderTemplateGallery();
 style();

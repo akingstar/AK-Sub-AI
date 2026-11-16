@@ -1,4 +1,5 @@
 import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2';
+import { refineRows, wordsToCues, toAsrCode } from './subtitle-utils.js';
 
 const PROXY='https://ak-sub-ai-nllb-proxy.akingstar205.workers.dev';
 const codes={
@@ -137,45 +138,6 @@ function parseVttRows(vtt, offset) {
  return rows;
 }
 
-function cleanOverlap(previous, current) {
- const a = String(previous || '').trim().split(/\s+/);
- const b = String(current || '').trim().split(/\s+/);
- const norm = s => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
-
- for (let n = Math.min(12, a.length, b.length); n > 0; n--) {
-  const left = a.slice(-n).map(norm).join(' ');
-  const right = b.slice(0, n).map(norm).join(' ');
-  if (left && left === right) return b.slice(n).join(' ');
- }
- return b.join(' ');
-}
-
-function wordsToRows(words, offset) {
- if (!Array.isArray(words)) return [];
- const rows = [];
- let current = null;
-
- for (const item of words) {
-  const text = String(item.word || item.text || '').trim();
-  const start = Number(item.start);
-  const end = Number(item.end);
-  if (!text || !Number.isFinite(start) ||
-      !Number.isFinite(end) || end <= start) continue;
-
-  if (!current || start - current.end > 0.8 ||
-      current.text.split(/\s+/).length >= 9 ||
-      /[.!?।]$/.test(current.text)) {
-   if (current) rows.push(current);
-   current = { start: offset + start, end: offset + end, text };
-  } else {
-   current.end = offset + end;
-   current.text += ' ' + text;
-  }
- }
- if (current) rows.push(current);
- return rows;
-}
-
 function cleanAudio(input) {
  // 1) high-pass ~80 Hz (removes hum/DC), 2) gentle normalize with capped gain
  const out = new Float32Array(input.length);
@@ -226,9 +188,8 @@ async function cloudTranscribe(id, buffer, language, turnstileToken) {
 
  const chunkSize = 30 * 16000;
  const overlap = 3 * 16000;
- const step = chunkSize - overlap;
  const lang = language && language !== 'auto'
-  ? (ASR_LANGUAGE_CODES[language] || language)
+  ? (ASR_LANGUAGE_CODES[language] || toAsrCode(language) || language)
   : null;
 
  if (typeof turnstileToken !== 'string' || !turnstileToken) {
@@ -252,7 +213,6 @@ async function cloudTranscribe(id, buffer, language, turnstileToken) {
  const sessionToken = authPayload.sessionToken;
 
  const rows = [];
- let previousChunkTail = '';
 
  const plan = planChunks(samples, chunkSize, overlap);
  for (const { offset, end } of plan) {
@@ -326,51 +286,23 @@ async function cloudTranscribe(id, buffer, language, turnstileToken) {
   }
 
   if (!chunkRows.length) {
-   chunkRows = wordsToRows(payload.words, offsetSeconds);
+   chunkRows = wordsToCues(payload.words, offsetSeconds);
   }
 
-  if (chunkRows.length) {
-   let firstRowHandled = false;
-   const overlapEnd = offset / 16000 + overlap / 16000;
+  for (const row of chunkRows) {
+   const text = String(row.text || '').trim();
+   if (!text) continue;
+   rows.push({
+    ...row,
+    text,
+    chunkOffset: offsetSeconds,
+    detectedLanguage,
+    languageProbability
+   });
+  }
 
-   for (const row of chunkRows) {
-    let text = String(row.text || '').trim();
-
-    // Remove duplicate speech only at the beginning of a new chunk.
-    if (!firstRowHandled) {
-     firstRowHandled = true;
-     if (offset > 0 && row.start < overlapEnd) {
-      text = cleanOverlap(previousChunkTail, text);
-     }
-    }
-
-    if (!text) continue;
-    rows.push({
-     ...row,
-     text,
-     detectedLanguage,
-     languageProbability
-    });
-   }
-
-   // Save only the previous chunk's overlapping tail for the next chunk.
-   const tailStart = Math.max(
-    offset / 16000,
-    end / 16000 - overlap / 16000
-   );
-   previousChunkTail = chunkRows
-    .filter(row => row.end > tailStart)
-    .map(row => String(row.text || '').trim())
-    .filter(Boolean)
-    .join(' ')
-    .split(/\s+/)
-    .slice(-12)
-    .join(' ');
-
-  } else if (payload.text) {
-   let text = String(payload.text).trim();
-   if (offset > 0) text = cleanOverlap(previousChunkTail, text);
-
+  if (!chunkRows.length && payload.text) {
+   const text = String(payload.text).trim();
    if (text) {
     rows.push({
      start: offsetSeconds,
@@ -380,28 +312,12 @@ async function cloudTranscribe(id, buffer, language, turnstileToken) {
      languageProbability
     });
    }
-
-   previousChunkTail = String(payload.text)
-    .trim().split(/\s+/).slice(-12).join(' ');
   }
 
   if (end === samples.length) break;
  }
 
- rows.sort((a, b) => a.start - b.start);
- const result = [];
-
- for (const row of rows) {
-  const text = String(row.text || '').trim();
-  if (!text) continue;
-
-  const last = result[result.length - 1];
-  if (last &&
-      text.toLowerCase() === last.text.toLowerCase() &&
-      Math.abs(row.start - last.start) < 5) continue;
-
-  result.push({ ...row, text });
- }
+ const result = refineRows(rows);
 
  if (!result.length) throw Error('No speech detected by Cloud Whisper.');
  return result;
@@ -710,14 +626,15 @@ async function localTranscribe(id, samples, lang) {
    text: String(c.text || '').trim()
   }))
   .filter(r => r.text && r.end > r.start);
- if (!rows.length) throw Error('No speech detected by local Whisper.');
- return rows;
+ const refined = refineRows(rows);
+ if (!refined.length) throw Error('No speech detected by local Whisper.');
+ return refined;
 }
 
 let cloudBlocked = false;
 async function transcribe(id, buffer, language, turnstileToken) {
  const lang = language && language !== 'auto'
-  ? (ASR_LANGUAGE_CODES[language] || language)
+  ? (ASR_LANGUAGE_CODES[language] || toAsrCode(language) || language)
   : null;
  if (!cloudBlocked) {
   try {

@@ -1,4 +1,4 @@
-const CACHE = "aksubai-v4-cloud-ai";
+const CACHE = "aksubai-v5-ai-latency";
 const CORE = ["/AK-Sub-AI/", "/AK-Sub-AI/index.html"];
 
 self.addEventListener("install", event => {

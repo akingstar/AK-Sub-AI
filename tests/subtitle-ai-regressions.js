@@ -50,6 +50,7 @@ export async function runAIRegressionTests() {
   check('Oversized cloud input rejected', await rejects(() => requestCaptionConversion(Array(13).fill('Hello'), 'hindi')));
  } finally { globalThis.fetch = nativeFetch; }
  const nativeTurnstile = window.turnstile;
+ const hadTurnstile = 'turnstile' in window;
  const container = document.createElement('div');
  document.body.appendChild(container);
  let options, removed = 0;
@@ -73,6 +74,7 @@ export async function runAIRegressionTests() {
   await Promise.resolve();
   options['expired-callback']();
   check('Expired security token is not accepted', await request.then(() => false, error => error.message.includes('expired')));
- } finally { window.turnstile = nativeTurnstile; container.remove(); }
+ } finally { if (hadTurnstile) window.turnstile = nativeTurnstile; else delete window.turnstile; container.remove(); }
+ check('Tests restore absent security SDK globals', ('turnstile' in window) === hadTurnstile);
  return { passed: results.filter(result => result.passed).length, total: results.length, failures: results.filter(result => !result.passed) };
 }

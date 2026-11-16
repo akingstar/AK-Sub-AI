@@ -1,4 +1,4 @@
-const CACHE = "aksubai-v3-fonts";
+const CACHE = "aksubai-v4-cloud-ai";
 const CORE = ["/AK-Sub-AI/", "/AK-Sub-AI/index.html"];
 
 self.addEventListener("install", event => {

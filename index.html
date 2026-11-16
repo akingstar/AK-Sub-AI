@@ -116,6 +116,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(139,120,2
    </div>
    <div class="progress"><div id="bar"></div></div>
    <div id="status">Upload a file to get started.</div>
+   <div id="securityCheck" hidden style="margin-top:12px;overflow:auto"></div>
   </section>
 
   <section class="panel">
@@ -195,7 +196,7 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(139,120,2
     <button class="secondary" id="translate">Translate to Hindi</button>
     <button class="secondary" id="reset">Reset style</button>
    </div>
-   <p class="muted">AI models download on first use. Processing runs in your browser.</p>
+   <p class="muted">Speech uses secure cloud AI; translation and Roman conversion send caption text to cloud text AI. No large translation-model downloads. Video export stays in your browser.</p>
   </section>
  </div>
 
@@ -232,6 +233,8 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:rgba(139,120,2
 // AI inference moved to ai-worker.js
 import { refineRows } from './subtitle-utils.js';
 import { loadSubtitleFonts, buildAss } from './subtitle-fonts.js';
+import { requestCaptionConversion, captionNeedsReview, needsRomanConversion } from './subtitle-ai.js';
+import { getTurnstileToken } from './subtitle-security.js';
 
 const $=id=>document.getElementById(id);
 let file=null, videoURL=null, rows=[];
@@ -242,39 +245,42 @@ let historyStack=[],redoStack=[];
 let translationStage='general processing';
 let segmentStopAt=null;
 
-const aiWorker=new Worker(
- new URL('./ai-worker.js?v=9',import.meta.url),
- {type:'module'}
-);
-let workerSequence=0;
+let aiWorker=null,workerReady=null,workerSequence=0;
 const workerPending=new Map();
-
-aiWorker.onmessage=({data})=>{
- if(data.progress){
-  status(data.progress);
-  return;
- }
- const p=workerPending.get(data.id);
- if(!p)return;
- workerPending.delete(data.id);
- if(data.ok)p.resolve(data.result);
- else p.reject(new Error(data.error||'Background AI failed.'));
-};
-aiWorker.onerror=e=>{
- const error=new Error(e.message||'AI worker failed.');
- for(const p of workerPending.values())p.reject(error);
+function failAIWorker(error){
+ for(const pending of workerPending.values()){clearTimeout(pending.timer);pending.reject(error);}
  workerPending.clear();
-};
-function workerRequest(type,payload={},transfer=[]){
+ aiWorker?.terminate();aiWorker=null;workerReady=null;
+}
+function ensureAIWorker(){
+ if(workerReady)return workerReady;
+ workerReady=new Promise((resolve,reject)=>{
+  const worker=new Worker(new URL('./ai-worker.js?v=10',import.meta.url),{type:'module'});
+  aiWorker=worker;
+  const startupTimer=setTimeout(()=>{const error=new Error('AI worker could not start within 20 seconds. Refresh and retry.');reject(error);failAIWorker(error);},20000);
+  const fail=error=>{clearTimeout(startupTimer);reject(error);failAIWorker(error);};
+  worker.onerror=event=>fail(new Error(event.message||'AI worker failed to load.'));
+  worker.onmessageerror=()=>fail(new Error('AI worker response could not be read.'));
+  worker.onmessage=({data})=>{
+   if(data.ready){clearTimeout(startupTimer);resolve(worker);return;}
+   const pending=workerPending.get(data.id);
+   if(!pending)return;
+   if(data.progress){pending.resetTimer();status(data.progress);return;}
+   clearTimeout(pending.timer);workerPending.delete(data.id);
+   if(data.ok)pending.resolve(data.result);
+   else pending.reject(new Error(data.error||'Background AI failed.'));
+  };
+ }).catch(error=>{workerReady=null;throw error;});
+ return workerReady;
+}
+async function workerRequest(type,payload={},transfer=[]){
+ const worker=await ensureAIWorker();
  return new Promise((resolve,reject)=>{
   const id=++workerSequence;
-  workerPending.set(id,{resolve,reject});
-  try{
-   aiWorker.postMessage({id,type,...payload},transfer);
-  }catch(e){
-   workerPending.delete(id);
-   reject(e);
-  }
+  const pending={resolve,reject,timer:null,resetTimer(){clearTimeout(this.timer);this.timer=setTimeout(()=>failAIWorker(new Error('Background AI stopped responding. Your editable captions are unchanged; retry the operation.')),120000);}};
+  workerPending.set(id,pending);pending.resetTimer();
+  try{worker.postMessage({id,type,...payload},transfer);}
+  catch(error){clearTimeout(pending.timer);workerPending.delete(id);reject(error);}
  });
 }
 
@@ -435,6 +441,7 @@ function render(){
   }
   const reasons=[...(r.reviewReasons||[])];
   if(r.romanReview)reasons.push('Roman conversion needs review; original text was kept.');
+  if(r.translationReview)reasons.push('Hindi translation needs review; original text was kept.');
   if(reasons.length){
    const note=document.createElement('p');note.className='muted';note.textContent=reasons.join(' ');
    right.append(note);
@@ -625,55 +632,10 @@ async function getAudio(){
 
 
 
-const ROMAN_ENDPOINTS=[
- {url:'https://text.pollinations.ai/openai',model:'openai-fast'},
- {url:'https://text.pollinations.ai/openai',model:'openai'}
-];
-const NEEDS_ROMAN=/[\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0900-\u097F\u0980-\u0DFF\u0E00-\u0E7F\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]/;
-
-async function requestRomanChunk(lines,languageName){
- const system='You are a professional subtitle transliterator. For every input line, keep the exact meaning, names, numbers and punctuation, but write the line in natural Latin-script (Roman) spelling used by native speakers in chats and subtitles. Hindi must become natural Hinglish, never IAST diacritics. Do not translate, do not add or remove words, never merge or split lines. Return ONLY a JSON array of strings with exactly '+lines.length+' items.';
- const user='Language: '+languageName+'\nLines:\n'+lines.map((line,index)=>(index+1)+'. '+line).join('\n');
-
- let lastError=null;
- for(const endpoint of ROMAN_ENDPOINTS){
-  const controller=new AbortController();
-  const timer=setTimeout(()=>controller.abort(),30000);
-  try{
-   const response=await fetch(endpoint.url,{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    signal:controller.signal,
-    body:JSON.stringify({
-     model:endpoint.model,
-     temperature:0,
-     messages:[{role:'system',content:system},{role:'user',content:user}]
-    })
-   });
-   if(!response.ok)throw new Error('HTTP '+response.status);
-   const payload=await response.json();
-   const content=payload?.choices?.[0]?.message?.content;
-   if(typeof content!=='string'||!content.trim())throw new Error('Empty transliteration response.');
-   const cleaned=content.replace(/^```(?:json)?/i,'').replace(/```$/,'').trim();
-   const start=cleaned.indexOf('[');
-   const end=cleaned.lastIndexOf(']');
-   if(start<0||end<=start)throw new Error('No JSON array in response.');
-   const parsed=JSON.parse(cleaned.slice(start,end+1));
-   if(!Array.isArray(parsed)||parsed.length!==lines.length||parsed.some(value=>typeof value!=='string'||!value.trim()))throw new Error('Invalid Roman subtitle response.');
-   return parsed.map(value=>value.trim());
-  }catch(error){
-   lastError=error;
-  }finally{
-   clearTimeout(timer);
-  }
- }
- throw lastError||new Error('Roman conversion failed.');
-}
-
 async function convertRowsToRoman(languageKey,onProgress){
  const indexes=[];
  rows.forEach((row,index)=>{
-  if(NEEDS_ROMAN.test(String(row.text||'')))indexes.push(index);
+  if(needsRomanConversion(row.text||''))indexes.push(index);
  });
  if(!indexes.length)return;
 
@@ -681,7 +643,8 @@ async function convertRowsToRoman(languageKey,onProgress){
   ?$('language').selectedOptions[0].textContent
   :'the original spoken language detected from the text';
 
- const chunkSize=30;
+ const chunkSize=12;
+ translationStage='Roman conversion';
  for(let offset=0;offset<indexes.length;offset+=chunkSize){
   const chunk=indexes.slice(offset,offset+chunkSize);
   const done=Math.min(offset+chunkSize,indexes.length);
@@ -690,22 +653,19 @@ async function convertRowsToRoman(languageKey,onProgress){
 
   let converted=null;
   try{
-   converted=await requestRomanChunk(lines,languageName);
+   converted=await requestCaptionConversion(lines,'roman',languageName);
   }catch(error){
    console.warn('Roman conversion unavailable; keeping original captions.',error);
   }
 
   chunk.forEach((rowIndex,position)=>{
    const original=String(rows[rowIndex].text||'');
-   const originalWords=original.trim().split(/\s+/).filter(Boolean).length;
-   let text=converted?.[position];
-   const convertedWords=text?text.trim().split(/\s+/).filter(Boolean).length:0;
-   const numbers=value=>JSON.stringify(String(value).match(/\p{N}+/gu)||[]);
-   const romanReview=!text||NEEDS_ROMAN.test(text)||numbers(text)!==numbers(original)||
-    Math.abs(convertedWords-originalWords)>Math.max(2,Math.ceil(originalWords*0.5));
+   const text=converted?.[position];
+   const romanReview=captionNeedsReview(original,text,'roman');
    rows[rowIndex]={...rows[rowIndex],originalText:rows[rowIndex].originalText??original,
     text:romanReview?original:text,romanReview};
   });
+  render();
  }
 }
 
@@ -721,14 +681,15 @@ async function translateRowsToHindi(){
  if(!result||!Array.isArray(result.rows))
   throw new Error('Invalid translation response.');
 
+ saveHistory();
  rows=result.rows;
+ render();
 
- let completionMessage=result.message||'Hindi subtitles ready.';
+ let completionMessage=result.message||'Hindi draft ready. Listen and review before exporting.';
  if(['roman_hindi','roman_original'].includes($('output').value)){
   await convertRowsToRoman('hindi',message=>status(message));
-  completionMessage=completionMessage
-   .replace(/^Hindi ready:/,'Roman Hindi ready:')
-   .replace('Hindi subtitles ready.','Roman Hindi subtitles ready.');
+  const reviewCount=rows.filter(row=>row.romanReview||row.translationReview).length;
+  completionMessage='Roman Hindi draft ready: '+rows.length+' captions. '+(reviewCount?reviewCount+' need review; original text kept.':'Listen and review before exporting.');
  }
 
  render();
@@ -738,67 +699,22 @@ async function translateRowsToHindi(){
 }
 
 
-const TURNSTILE_SITE_KEY = '0x4AAAAAAF4SP-mfoSwBJgvu';
-let akTurnstileLoadPromise=null;
-
-function loadAkTurnstile(){
- if(window.turnstile)return Promise.resolve();
- if(akTurnstileLoadPromise)return akTurnstileLoadPromise;
- akTurnstileLoadPromise=new Promise((resolve,reject)=>{
-  const script=document.createElement('script');
-  script.src='https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
-  script.async=true;
-  script.defer=true;
-  script.onload=resolve;
-  script.onerror=()=>reject(new Error('Could not load Cloudflare security check.'));
-  document.head.appendChild(script);
- });
- return akTurnstileLoadPromise;
-}
-async function getTurnstileToken(){
- if(!TURNSTILE_SITE_KEY||TURNSTILE_SITE_KEY.startsWith('REPLACE_'))
-  throw new Error('Configure the Cloudflare Turnstile site key first.');
- await loadAkTurnstile();
- return new Promise((resolve,reject)=>{
-  let settled=false,widgetId=null;
-  const box=document.createElement('div');
-  document.body.appendChild(box);
-  const finish=(fn,value)=>{
-   if(settled)return;
-   settled=true;
-   clearTimeout(timer);
-   if(widgetId!==null)window.turnstile.remove(widgetId);
-   box.remove();
-   fn(value);
-  };
-  const timer=setTimeout(()=>finish(reject,new Error('Security check timed out. Please retry in a normal browser tab.')),45000);
-  try{
-   widgetId=window.turnstile.render(box,{
-    sitekey:TURNSTILE_SITE_KEY,
-    size:'invisible',
-    execution:'execute',
-    action:'ak_sub_ai',
-    callback:token=>finish(resolve,token),
-    'error-callback':()=>finish(reject,new Error('Cloudflare security check failed.')),
-    'expired-callback':()=>finish(reject,new Error('Security token expired. Please retry.'))
-   });
-   window.turnstile.execute(widgetId);
-  }catch(error){finish(reject,error);}
- });
-}
-
 $('generate').onclick=async()=>{
  if(!file||busy)return alert('Please upload a video or audio file first.');
 
  setBusy(true);
 
  try{
+  progress(0);
+  translationStage='audio extraction';
   status('Preparing audio...');
   const audio=await getAudio();
   const lang=$('language').value;
 
+  translationStage='security verification';
   status('Checking secure access...');
-  const turnstileToken=await getTurnstileToken();
+  const turnstileToken=await getTurnstileToken($('securityCheck'));
+  translationStage='cloud transcription';
   status('Whisper is transcribing in background...');
   const result=await workerRequest(
    'transcribe',
@@ -806,19 +722,12 @@ $('generate').onclick=async()=>{
    [audio.buffer]
   );
 
-  rows=result.map(r=>({
-   ...r,
-   originalText:r.text,
-   end:Number.isFinite(r.end)
-    ?r.end
-    :Math.max(3,$('video').duration||3)
-  }));
-
-  if(!rows.length)throw new Error('No speech detected.');
-
+  if(!Array.isArray(result))throw new Error('Cloud speech AI returned invalid captions.');
   const videoDuration=Number($('video').duration);
-  rows=refineRows(rows,Number.isFinite(videoDuration)&&videoDuration>0?{duration:videoDuration}:{});
-  if(!rows.length)throw new Error('No speech detected.');
+  const generated=refineRows(result.map(row=>({...row,originalText:row.text})),Number.isFinite(videoDuration)&&videoDuration>0?{duration:videoDuration}:{});
+  if(!generated.length)throw new Error('No speech detected.');
+  saveHistory();rows=generated;
+  render();
 
   const outputMode=$('output').value;
   if(outputMode==='roman_original'){

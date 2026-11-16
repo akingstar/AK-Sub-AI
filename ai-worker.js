@@ -1,46 +1,82 @@
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2';
 import { refineRows, wordsToCues, toAsrCode } from './subtitle-utils.js';
-import { translateCaptions } from './subtitle-ai.js';
 
-const PROXY = 'https://ak-sub-ai-nllb-proxy.akingstar205.workers.dev';
+const PROXY='https://ak-sub-ai-nllb-proxy.akingstar205.workers.dev';
+const codes={
+ english:'eng_Latn',spanish:'spa_Latn',french:'fra_Latn',
+ arabic:'arb_Arab',german:'deu_Latn',japanese:'jpn_Jpan',
+ chinese:'zho_Hans',portuguese:'por_Latn',russian:'rus_Cyrl',
+ italian:'ita_Latn',dutch:'nld_Latn',polish:'pol_Latn',
+ swahili:'swh_Latn',thai:'tha_Thai',turkish:'tur_Latn',
+ urdu:'urd_Arab',vietnamese:'vie_Latn',
+ bulgarian:'bul_Cyrl',greek:'ell_Grek'
+};
+const labels={
+ ar:'arabic',bg:'bulgarian',de:'german',el:'greek',
+ en:'english',es:'spanish',fr:'french',hi:'hindi',
+ it:'italian',ja:'japanese',nl:'dutch',pl:'polish',
+ pt:'portuguese',ru:'russian',sw:'swahili',th:'thai',
+ tr:'turkish',ur:'urdu',vi:'vietnamese',zh:'chinese'
+};
+let asr=null,translator=null,translatorModel=null,detector=null;
 
-function progress(id, message) {
- self.postMessage({ id, progress: message });
+function progress(id,message){
+ self.postMessage({id,progress:message});
 }
+function isHindi(text){
+ text=String(text||'');
+ const letters=(text.match(/\p{L}/gu)||[]).length;
+ const dev=(text.match(/[\u0900-\u097F]/g)||[]).length;
+ return dev>=2 && dev/Math.max(letters,1)>=0.20;
+}
+async function detect(rows,id){
+ const sample=rows.slice(0,40)
+  .map(r=>r.sourceText??r.text??'').join(' ').slice(0,2000);
 
-async function cloudRequest(path, body, sessionToken) {
- const controller = new AbortController();
- const timer = setTimeout(() => controller.abort(), path === '/authorize' ? 20000 : 90000);
- try {
-  const response = await fetch(PROXY + path, {
-   method: 'POST', signal: controller.signal,
-   headers: { 'Content-Type': 'application/json', ...(sessionToken ? { Authorization: 'Bearer ' + sessionToken } : {}) },
-   body: JSON.stringify(body)
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-   const details = path === '/authorize' && Array.isArray(payload.codes) && payload.codes.length ? ' Codes: ' + payload.codes.join(', ') : '';
-   const error = new Error((payload.error || 'Cloud speech AI failed (HTTP ' + response.status + ').') + details);
-   error.quota = /4006|daily free allocation|neurons/i.test(error.message);
-   throw error;
-  }
-  return payload;
- } catch (error) {
-  if (error.name === 'AbortError') throw new Error(path === '/authorize' ? 'Secure authorization timed out.' : 'Cloud speech AI timed out for this audio chunk.');
-  if (error instanceof TypeError) throw new Error('Cannot reach cloud speech AI. Check your connection.');
-  throw error;
- } finally {
-  clearTimeout(timer);
+ if(isHindi(sample))return 'hindi';
+
+ if(!detector){
+  progress(id,'Loading language detector...');
+  detector=await pipeline(
+   'text-classification',
+   'onnx-community/xlm-roberta-base-language-detection-ONNX',
+   {dtype:'q8'}
+  );
  }
+ progress(id,'Detecting source language...');
+ const result=await detector(sample,{top_k:1,truncation:true});
+ const p=Array.isArray(result?.[0])?result[0][0]:result?.[0];
+ if(!p?.label||typeof p.score!=='number')
+  throw Error('Language detection failed. Select language manually.');
+
+ const key=String(p.label).toLowerCase()
+  .replace(/^__label__/,'').replace(/^label_/,'');
+ const lang=labels[key];
+ if(!lang||p.score<0.45)
+  throw Error('Language unclear. Select it manually.');
+ return lang;
 }
+
+
+const ASR_LANGUAGE_CODES = {
+ hindi:'hi', english:'en', spanish:'es', french:'fr',
+ arabic:'ar', german:'de', japanese:'ja', chinese:'zh',
+ portuguese:'pt', russian:'ru', italian:'it', dutch:'nl',
+ polish:'pl', swahili:'sw', thai:'th', turkish:'tr',
+ urdu:'ur', vietnamese:'vi', bulgarian:'bg', greek:'el'
+};
 
 function encodeWavBase64(samples, from, to) {
  const count = to - from;
  const buffer = new ArrayBuffer(44 + count * 2);
  const view = new DataView(buffer);
  const bytes = new Uint8Array(buffer);
+
  const write = (offset, value) => {
-  for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i));
+  for (let i = 0; i < value.length; i++)
+   view.setUint8(offset + i, value.charCodeAt(i));
  };
+
  write(0, 'RIFF');
  view.setUint32(4, 36 + count * 2, true);
  write(8, 'WAVE');
@@ -54,18 +90,23 @@ function encodeWavBase64(samples, from, to) {
  view.setUint16(34, 16, true);
  write(36, 'data');
  view.setUint32(40, count * 2, true);
+
  for (let i = 0; i < count; i++) {
   const value = Math.max(-1, Math.min(1, samples[from + i]));
-  view.setInt16(44 + i * 2, value < 0 ? value * 32768 : value * 32767, true);
+  view.setInt16(44 + i * 2,
+   value < 0 ? value * 32768 : value * 32767, true);
  }
+
  let binary = '';
- for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+ for (let i = 0; i < bytes.length; i += 0x8000) {
+  binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+ }
  return btoa(binary);
 }
 
 function parseVttTime(value) {
  const parts = value.trim().split(':').map(Number);
- if (parts.some(number => !Number.isFinite(number))) return NaN;
+ if (parts.some(n => !Number.isFinite(n))) return NaN;
  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
  if (parts.length === 2) return parts[0] * 60 + parts[1];
  return NaN;
@@ -74,33 +115,47 @@ function parseVttTime(value) {
 function parseVttRows(vtt, offset) {
  if (typeof vtt !== 'string' || !vtt.trim()) return [];
  const rows = [];
- for (const block of vtt.replace(/\r/g, '').split(/\n\s*\n/)) {
+ const blocks = vtt.replace(/\r/g, '').split(/\n\s*\n/);
+
+ for (const block of blocks) {
   const lines = block.split('\n');
   const timingIndex = lines.findIndex(line => line.includes('-->'));
   if (timingIndex < 0) continue;
+
   const timing = lines[timingIndex].split('-->');
   if (timing.length !== 2) continue;
+
   const start = parseVttTime(timing[0]);
   const end = parseVttTime(timing[1].trim().split(/\s+/)[0]);
-  const text = lines.slice(timingIndex + 1).join(' ').replace(/<[^>]*>/g, '').trim();
-  if (text && Number.isFinite(start) && Number.isFinite(end) && end > start) rows.push({ start: offset + start, end: offset + end, text });
+  const text = lines.slice(timingIndex + 1)
+   .join(' ').replace(/<[^>]*>/g, '').trim();
+
+  if (!text || !Number.isFinite(start) ||
+      !Number.isFinite(end) || end <= start) continue;
+
+  rows.push({ start: offset + start, end: offset + end, text });
  }
  return rows;
 }
 
 function cleanAudio(input) {
+ // 1) high-pass ~80 Hz (removes hum/DC), 2) gentle normalize with capped gain
  const out = new Float32Array(input.length);
  const a = Math.exp(-2 * Math.PI * 80 / 16000);
  let prevIn = 0, prevOut = 0, peak = 0;
  for (let i = 0; i < input.length; i++) {
   const x = input[i];
   const y = a * (prevOut + x - prevIn);
-  prevIn = x; prevOut = y; out[i] = y;
-  peak = Math.max(peak, Math.abs(y));
+  prevIn = x; prevOut = y;
+  out[i] = y;
+  const m = Math.abs(y);
+  if (m > peak) peak = m;
  }
- if (peak < 0.005) return input;
- const gain = Math.min(0.9 / peak, 6);
- if (gain > 1.05 || gain < 0.95) for (let i = 0; i < out.length; i++) out[i] *= gain;
+ if (peak < 0.005) return input;          // almost silent, leave untouched
+ const gain = Math.min(0.9 / peak, 6);    // never boost more than 6x
+ if (gain > 1.05 || gain < 0.95) {
+  for (let i = 0; i < out.length; i++) out[i] *= gain;
+ }
  return out;
 }
 
@@ -111,12 +166,12 @@ function planChunks(samples, maxLen, overlap) {
  while (offset < samples.length) {
   let end = Math.min(samples.length, offset + maxLen);
   if (offset + maxLen < samples.length) {
-   let best = -1, bestEnergy = Infinity;
+   let best = -1, bestE = Infinity;
    const from = offset + minLen, to = offset + maxLen - sr;
    for (let p = from; p + frame <= to; p += frame) {
-    let energy = 0;
-    for (let i = p; i < p + frame; i++) energy += samples[i] * samples[i];
-    if (energy < bestEnergy) { bestEnergy = energy; best = p + (frame >> 1); }
+    let e = 0;
+    for (let i = p; i < p + frame; i++) e += samples[i] * samples[i];
+    if (e < bestE) { bestE = e; best = p + (frame >> 1); }
    }
    if (best > 0) end = best;
   }
@@ -129,83 +184,483 @@ function planChunks(samples, maxLen, overlap) {
 
 async function cloudTranscribe(id, buffer, language, turnstileToken) {
  const samples = cleanAudio(new Float32Array(buffer));
- if (!samples.length) throw new Error('Audio is empty.');
- const lang = toAsrCode(language);
- if (typeof turnstileToken !== 'string' || !turnstileToken) throw new Error('Security verification is required. Please retry.');
+ if (!samples.length) throw Error('Audio is empty.');
+
+ const chunkSize = 30 * 16000;
+ const overlap = 3 * 16000;
+ const lang = language && language !== 'auto'
+  ? (ASR_LANGUAGE_CODES[language] || toAsrCode(language) || language)
+  : null;
+
+ if (typeof turnstileToken !== 'string' || !turnstileToken) {
+  throw Error('Security verification is required. Please retry.');
+ }
  progress(id, 'Verifying secure access...');
- const auth = await cloudRequest('/authorize', { token: turnstileToken });
- if (!auth.sessionToken) throw new Error('Cloud authorization returned no session. Complete the security check again.');
+ const authResponse = await fetch(`${PROXY}/authorize`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ token: turnstileToken })
+ });
+ const authPayload = await authResponse.json().catch(() => ({}));
+ if (!authResponse.ok || !authPayload.sessionToken) {
+  throw Error([
+  authPayload.error || `Security verification failed (${authResponse.status}).`,
+  Array.isArray(authPayload.codes) && authPayload.codes.length ? `codes=${authPayload.codes.join(",")}` : "",
+  authPayload.hostname ? `hostname=${authPayload.hostname}` : "",
+  authPayload.action ? `action=${authPayload.action}` : ""
+].filter(Boolean).join(" | "));
+ }
+ const sessionToken = authPayload.sessionToken;
+
  const rows = [];
- const plan = planChunks(samples, 30 * 16000, 3 * 16000);
+
+ const plan = planChunks(samples, chunkSize, overlap);
  for (const { offset, end } of plan) {
   const offsetSeconds = offset / 16000;
-  progress(id, 'Cloud Whisper: ' + Math.round(offsetSeconds) + 's / ' + Math.ceil(samples.length / 16000) + 's');
-  const body = { audio: encodeWavBase64(samples, offset, end), ...(lang ? { language: lang } : {}) };
-  const payload = await cloudRequest('/transcribe', body, auth.sessionToken);
-  const info = payload.transcription_info || {};
-  let chunkRows = parseVttRows(payload.vtt, offsetSeconds);
-  const segmentRows = Array.isArray(payload.segments) ? payload.segments.map(item => ({
-   start: item.start ?? item.timestamp?.[0], end: item.end ?? item.timestamp?.[1], text: item.text
-  })).filter(item => item.start != null && item.end != null).map(item => ({
-   start: offsetSeconds + Number(item.start), end: offsetSeconds + Number(item.end), text: String(item.text || '').trim()
-  })).filter(row => row.text && Number.isFinite(row.start) && Number.isFinite(row.end) && row.end > row.start) : [];
-  if (!chunkRows.length) chunkRows = segmentRows;
-  if (lang === 'hi' && /\p{Script=Devanagari}/u.test(String(payload.text)) && !chunkRows.some(row => /\p{Script=Devanagari}/u.test(row.text))) {
-   chunkRows = segmentRows.some(row => /\p{Script=Devanagari}/u.test(row.text)) ? segmentRows : [{ start: offsetSeconds, end: end / 16000, text: String(payload.text).trim() }];
-  }
-  if (!chunkRows.length) chunkRows = wordsToCues(payload.words, offsetSeconds);
-  if (!chunkRows.length && typeof payload.text === 'string' && payload.text.trim()) chunkRows = [{ start: offsetSeconds, end: end / 16000, text: payload.text.trim() }];
-  for (const row of chunkRows) rows.push({
-   ...row, chunkOffset: offsetSeconds,
-   detectedLanguage: typeof info.language === 'string' ? info.language : null,
-   languageProbability: Number.isFinite(info.language_probability) ? info.language_probability : null
+  const seconds = Math.ceil(samples.length / 16000);
+
+  progress(id,
+   `Cloud Whisper: ${Math.round(offset / 16000)}s / ${seconds}s`);
+
+  const body = { audio: encodeWavBase64(samples, offset, end) };
+  if (lang) body.language = lang;
+
+  const response = await fetch(`${PROXY}/transcribe`, {
+   method: 'POST',
+   headers: {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${sessionToken}`
+   },
+   body: JSON.stringify(body)
   });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+   const msg = payload.error ||
+    `Cloud transcription failed (${response.status}).`;
+   const err = Error(msg);
+   err.quota = /4006|daily free allocation|neurons/i.test(msg);
+   throw err;
+  }
+
+  const transcriptionInfo = payload.transcription_info || {};
+  const detectedLanguage =
+   typeof transcriptionInfo.language === 'string'
+    ? transcriptionInfo.language : null;
+  const languageProbability =
+   Number.isFinite(transcriptionInfo.language_probability)
+    ? transcriptionInfo.language_probability : null;
+
+  let chunkRows = parseVttRows(payload.vtt, offsetSeconds);
+
+  const segmentRows = Array.isArray(payload.segments)
+   ? payload.segments.map(item => ({
+      start: offsetSeconds + Number(item.start ?? item.timestamp?.[0] ?? 0),
+      end: offsetSeconds + Number(item.end ?? item.timestamp?.[1] ??
+       (item.start ?? 0) + 2),
+      text: String(item.text || '').trim()
+     })).filter(r => r.text && Number.isFinite(r.start) &&
+      Number.isFinite(r.end) && r.end > r.start)
+   : [];
+
+  if (!chunkRows.length && segmentRows.length) {
+   chunkRows = segmentRows;
+  }
+
+  // Hindi main text takes priority over English-only VTT output.
+  if (lang === 'hi' && isHindi(payload.text)) {
+   const rowsHaveHindi = chunkRows.some(row => isHindi(row.text));
+   const segmentsHaveHindi = segmentRows.some(row => isHindi(row.text));
+
+   if (!rowsHaveHindi) {
+    if (segmentsHaveHindi) {
+     chunkRows = segmentRows;
+    } else {
+     chunkRows = [{
+      start: offsetSeconds,
+      end: end / 16000,
+      text: String(payload.text).trim()
+     }];
+    }
+   }
+  }
+
+  if (!chunkRows.length) {
+   chunkRows = wordsToCues(payload.words, offsetSeconds);
+  }
+
+  for (const row of chunkRows) {
+   const text = String(row.text || '').trim();
+   if (!text) continue;
+   rows.push({
+    ...row,
+    text,
+    chunkOffset: offsetSeconds,
+    detectedLanguage,
+    languageProbability
+   });
+  }
+
+  if (!chunkRows.length && payload.text) {
+   const text = String(payload.text).trim();
+   if (text) {
+    rows.push({
+     start: offsetSeconds,
+     end: end / 16000,
+     text,
+     detectedLanguage,
+     languageProbability
+    });
+   }
+  }
+
+  if (end === samples.length) break;
  }
- const result = refineRows(rows, { duration: samples.length / 16000 });
- if (!result.length) throw new Error('No speech detected by Cloud Whisper.');
+
+ const result = refineRows(rows);
+
+ if (!result.length) throw Error('No speech detected by Cloud Whisper.');
  return result;
 }
 
-let localAsr;
+
+function isRomanHindi(text){
+ const words=String(text||'').toLowerCase()
+  .replace(/[^a-z\s]/g,' ').split(/\s+/).filter(Boolean);
+
+ const strong=new Set([
+  'aap','tum','mujhe','hum','hume','humein',
+  'hain','hai','hoon','hun','kya','kaise',
+  'kaisa','kaisi','kyun','kyu','nahi','nahin',
+  'mera','meri','mere','tera','teri','tere',
+  'raha','rahi','rahe','karo','karen',
+  'batao','bolo','bhai','acha','achha',
+  'theek','thik','chahiye','kahan','yahan',
+  'wahan','liye','wala','wali','hain'
+ ]);
+
+ const hits=words.filter(w=>strong.has(w)).length;
+ return hits>=2 || (hits>=1 && words.length>=4);
+}
+
+async function translate(id,inputRows,selected){
+ const originals=inputRows.map(r=>({
+  ...r,sourceText:r.sourceText??r.text??''
+ }));
+ if(!originals.length)throw Error('Generate subtitles first.');
+
+ const translated=originals.map(r=>r.sourceText);
+ const groups={};
+ let preserved=0, hindiPreserved=0, uncertain=0;
+
+ for(let i=0;i<originals.length;i++){
+  const text=String(originals[i].sourceText||'').trim();
+  if(!text){preserved++;continue;}
+
+  let source=selected;
+
+  if(selected==='auto'){
+   // Native Hindi script: preserve it.
+   const hasLatinWords = /[A-Za-z]{2,}/.test(text);
+
+   // Pure Devanagari Hindi stays unchanged.
+   if(isHindi(text) && !hasLatinWords){
+    preserved++;
+    hindiPreserved++;
+    continue;
+   }
+
+   // Mixed Devanagari + English: translate only Latin phrases.
+   if(isHindi(text) && hasLatinWords){
+    source='mixed';
+    (groups.mixed??=[]).push(i);
+    continue;
+   }
+
+   // Roman Hindi is sent through the Hindi translation path.
+   if(isRomanHindi(text)){
+    source='english';
+    (groups.english??=[]).push(i);
+    continue;
+   }
+
+   // Detect each subtitle separately, not the whole mixed transcript.
+   try{
+    if(!detector){
+     progress(id,'Loading language detector...');
+     detector=await pipeline(
+      'text-classification',
+      'onnx-community/xlm-roberta-base-language-detection-ONNX',
+      {dtype:'q8'}
+     );
+    }
+
+    let result=await detector(text.slice(0,500),{
+     top_k:1,truncation:true
+    });
+    let prediction=Array.isArray(result?.[0])
+     ?result[0][0]:result?.[0];
+
+    // Short subtitle fragments are hard to classify alone.
+    // Use nearby non-Hindi subtitle context when confidence is weak.
+    if((text.split(/\s+/).length<=3 || (prediction?.score??0)<0.65)
+       && originals.length>1){
+     const context=originals
+      .slice(Math.max(0,i-2),Math.min(originals.length,i+3))
+      .map(r=>String(r.sourceText||'').trim())
+      .filter(t=>t&&!isHindi(t)&&!isRomanHindi(t))
+      .join(' ').slice(0,500);
+
+     if(context&&context!==text){
+      const contextual=await detector(context,{
+       top_k:1,truncation:true
+      });
+      const candidate=Array.isArray(contextual?.[0])
+       ?contextual[0][0]:contextual?.[0];
+      if((candidate?.score??0)>(prediction?.score??0))
+       prediction=candidate;
+     }
+    }
+
+    const key=String(prediction?.label||'').toLowerCase()
+     .replace(/^__label__/,'').replace(/^label_/,'');
+    source=labels[key];
+
+    if(!source||typeof prediction?.score!=='number'
+       ||prediction.score<0.45){
+     preserved++;
+     uncertain++;
+     continue;
+    }
+   }catch(e){
+    console.warn('Subtitle language detection skipped:',e);
+    preserved++;
+    uncertain++;
+    continue;
+   }
+  }
+
+  if(source==='hindi'){
+   const hasLatinWords = /[A-Za-z]{2,}/.test(text);
+
+   // Preserve pure Devanagari Hindi.
+   if(isHindi(text) && !hasLatinWords){
+    preserved++;
+    hindiPreserved++;
+    continue;
+   }
+
+   // Translate only Latin phrases in mixed Hindi-English subtitles.
+   if(isHindi(text) && hasLatinWords){
+    (groups.mixed??=[]).push(i);
+    continue;
+   }
+
+   // In Hindi mode, convert Latin-script transcription to Hindi.
+   // This also handles Roman Hindi and English-only ASR output.
+   (groups.english??=[]).push(i);
+   continue;
+  }
+
+  if(!codes[source]){
+   preserved++;
+   uncertain++;
+   continue;
+  }
+
+  (groups[source]??=[]).push(i);
+ }
+
+ const sources=Object.keys(groups);
+
+ if(sources.length){
+
+  for(const source of sources){
+   const indexes=groups[source];
+
+   if(source==='mixed'){
+    const modelName='Xenova/opus-mt-en-hi';
+
+    if(!translator||translatorModel!==modelName){
+     progress(id,'Loading English-Hindi model for mixed subtitles...');
+     translator=await pipeline('translation',modelName,{dtype:'q8'});
+     translatorModel=modelName;
+    }
+
+    const pattern=/[A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*)*/g;
+
+    for(const index of indexes){
+     const original=originals[index].sourceText;
+     const matches=[...original.matchAll(pattern)];
+
+     if(!matches.length){
+      preserved++;
+      continue;
+     }
+
+     const inputs=matches.map(match=>match[0]);
+     const results=await translator(inputs);
+
+     if(!Array.isArray(results)||results.length!==inputs.length){
+      preserved++;
+      uncertain++;
+      continue;
+     }
+
+     let rebuilt='';
+     let cursor=0;
+
+     matches.forEach((match,j)=>{
+      rebuilt+=original.slice(cursor,match.index);
+      const value=String(results[j]?.translation_text||'').trim();
+      rebuilt+=value||match[0];
+      if(!value)uncertain++;
+      cursor=match.index+match[0].length;
+     });
+
+     rebuilt+=original.slice(cursor);
+     translated[index]=rebuilt;
+    }
+
+    continue;
+   }
+
+   let modelName;
+   if(source==='english'){
+    modelName='Xenova/opus-mt-en-hi';
+   }else{
+    modelName='Xenova/nllb-200-distilled-600M';
+   }
+
+   if(!translator||translatorModel!==modelName){
+    progress(id,source==='english'
+     ?'Loading lightweight English-Hindi model...'
+     :'Loading multilingual Hindi translation model...');
+
+    if(source==='english'){
+     translator=await pipeline(
+      'translation',
+      modelName,
+      {dtype:'q8'}
+     );
+    }else{
+     const previous=env.remoteHost;
+     env.remoteHost=PROXY;
+     try{
+      translator=await pipeline(
+       'translation',
+       modelName,
+       {dtype:'q8'}
+      );
+     }finally{
+      env.remoteHost=previous;
+     }
+    }
+    translatorModel=modelName;
+   }
+
+   for(let start=0;start<indexes.length;start+=4){
+    const batchIndexes=indexes.slice(start,start+4);
+    const inputs=batchIndexes.map(i=>originals[i].sourceText);
+
+    progress(id,`Translating ${source}: ${Math.min(start+4,indexes.length)}/${indexes.length}`);
+
+    const results=source==='english'
+     ?await translator(inputs)
+     :await translator(inputs,{
+       src_lang:codes[source],
+       tgt_lang:'hin_Deva'
+      });
+
+    if(!Array.isArray(results)||results.length!==inputs.length)
+     throw Error('Translation response invalid for '+source);
+
+    results.forEach((r,j)=>{
+     const value=String(r?.translation_text||'').trim();
+     if(value)translated[batchIndexes[j]]=value;
+     else{
+      preserved++;
+      uncertain++;
+     }
+    });
+   }
+  }
+ }
+
+ const count=originals.length-preserved;
+ return {
+  rows:originals.map((r,i)=>({...r,text:translated[i]})),
+  message:`Hindi ready: ${count} translated, ${hindiPreserved} Hindi preserved, ${uncertain} uncertain lines unchanged.`
+ };
+}
+
+let localAsr = null;
 async function localTranscribe(id, samples, lang) {
- const memory = navigator.deviceMemory || 4;
- if (/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || '') || memory < 8) {
-  throw new Error('Cloud speech quota is exhausted. Local Whisper is disabled on this low-memory device; retry after the provider quota resets.');
+ const mem = (typeof navigator !== 'undefined' && navigator.deviceMemory) || 4;
+ const isMobile = typeof navigator !== 'undefined' && /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || '');
+ if (isMobile || mem < 8) {
+  throw Error('Cloud limit khatam. Is device par local Whisper safe nahi hai (phone restart ho sakta hai). Subah ~5:30 IST ke baad dobara try karo, ya laptop (Chrome) par use karo.');
  }
  if (!localAsr) {
-  progress(id, 'Cloud speech quota exhausted; loading local Whisper on this high-memory device...');
-  const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.2');
-  const useGpu = !!navigator.gpu;
-  localAsr = await pipeline('automatic-speech-recognition', useGpu ? 'onnx-community/whisper-large-v3-turbo' : 'onnx-community/whisper-base',
-   useGpu ? { device: 'webgpu', dtype: { encoder_model: 'fp16', decoder_model_merged: 'q4' } } : { dtype: 'q8' });
+  progress(id, 'Cloud limit khatam, local Whisper load ho raha hai (pehli baar download)...');
+  const useGpu = typeof navigator !== 'undefined' && !!navigator.gpu;
+  localAsr = await pipeline(
+   'automatic-speech-recognition',
+   useGpu ? 'onnx-community/whisper-large-v3-turbo' : 'onnx-community/whisper-base',
+   useGpu
+    ? { device: 'webgpu', dtype: { encoder_model: 'fp16', decoder_model_merged: 'q4' } }
+    : { dtype: 'q8' }
+  );
  }
- progress(id, 'Local Whisper: transcribing...');
- const output = await localAsr(samples, { chunk_length_s: 30, stride_length_s: 5, return_timestamps: true, ...(lang ? { language: lang, task: 'transcribe' } : {}) });
- const rows = refineRows((output.chunks || []).filter(chunk => chunk.timestamp?.[0] != null && chunk.timestamp?.[1] != null).map(chunk => ({
-  start: Number(chunk.timestamp[0]), end: Number(chunk.timestamp[1]), text: chunk.text
- })), { duration: samples.length / 16000 });
- if (!rows.length) throw new Error('No speech detected by local Whisper.');
- return rows;
+ progress(id, 'Local Whisper: transcribe ho raha hai...');
+ const out = await localAsr(samples, {
+  chunk_length_s: 30,
+  stride_length_s: 5,
+  return_timestamps: true,
+  ...(lang ? { language: lang, task: 'transcribe' } : {})
+ });
+ const rows = (out.chunks || [])
+  .map(c => ({
+   start: Number(c.timestamp?.[0] ?? 0),
+   end: Number(c.timestamp?.[1] ?? (c.timestamp?.[0] ?? 0) + 2),
+   text: String(c.text || '').trim()
+  }))
+  .filter(r => r.text && r.end > r.start);
+ const refined = refineRows(rows);
+ if (!refined.length) throw Error('No speech detected by local Whisper.');
+ return refined;
 }
 
-async function transcribe(id, buffer, language, token) {
- try { return await cloudTranscribe(id, buffer, language, token); }
- catch (error) {
-  if (!error.quota) throw error;
-  return localTranscribe(id, new Float32Array(buffer), toAsrCode(language));
+let cloudBlocked = false;
+async function transcribe(id, buffer, language, turnstileToken) {
+ const lang = language && language !== 'auto'
+  ? (ASR_LANGUAGE_CODES[language] || toAsrCode(language) || language)
+  : null;
+ if (!cloudBlocked) {
+  try {
+   return await cloudTranscribe(id, buffer, language, turnstileToken);
+  } catch (e) {
+   if (!e || !e.quota) throw e;
+   cloudBlocked = true;
+  }
  }
+ return await localTranscribe(id, new Float32Array(buffer), lang);
 }
 
-self.onmessage = async ({ data }) => {
- const { id, type } = data || {};
- try {
+self.onmessage=async({data})=>{
+ const {id,type}=data||{};
+ try{
   let result;
-  if (type === 'transcribe') result = await transcribe(id, data.audioBuffer, data.language, data.turnstileToken);
-  else if (type === 'translate') result = await translateCaptions(data.rows, data.selectedLanguage, message => progress(id, message));
-  else throw new Error('Unknown AI task.');
-  self.postMessage({ id, ok: true, result });
- } catch (error) {
-  self.postMessage({ id, ok: false, error: error?.message || String(error) });
+  if(type==='transcribe')
+   result=await transcribe(id,data.audioBuffer,data.language,data.turnstileToken);
+  else if(type==='translate')
+   result=await translate(id,data.rows,data.selectedLanguage);
+  else throw Error('Unknown AI task.');
+  self.postMessage({id,ok:true,result});
+ }catch(e){
+  self.postMessage({
+   id,ok:false,
+   error:e?.stack||e?.message||String(e)
+  });
  }
 };
-self.postMessage({ ready: true });

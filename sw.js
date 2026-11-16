@@ -1,4 +1,4 @@
-const CACHE = "aksubai-v5-ai-latency";
+const CACHE = "aksubai-v3-fonts";
 const CORE = ["/AK-Sub-AI/", "/AK-Sub-AI/index.html"];
 
 self.addEventListener("install", event => {
